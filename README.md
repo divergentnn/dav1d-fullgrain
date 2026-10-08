@@ -23,18 +23,27 @@ The upstream dav1d README is [README.dav1d.md](README.dav1d.md).
 
 ## Comparison
 
-These crops come from *Black Swan* (stage scene, haze and stage lights),
-1080p AV1 with film grain. They show the same decoded frame and the same grain
-parameters; only the synthesis differs.
+A frame from *Black Swan* (stage haze), 1080p 10-bit AV1 with film grain. Both
+halves decode the same bitstream with the same grain parameters; only the
+synthesis differs. This encode happens to use an unlucky grain seed: its
+82x73 template has a visible blotch, and standard AV1 tiles it across the
+whole frame. Full-frame synthesis doesn't use a template, so the seed can't
+create a pattern.
 
-| standard AV1 grain (upstream dav1d) | full-frame grain (this fork) |
-|---|---|
-| ![](docs/fullgrain/stage_standard.png) | ![](docs/fullgrain/stage_full.png) |
+At 1:1:
 
-The same haze, zoomed 2x with contrast stretched:
+![1:1](docs/fullgrain/badseed_1to1.png)
 
-![zoom](docs/fullgrain/stage_zoom.png)
+Contrast stretched 2.5x, where the repeating tile is easy to see:
 
+![contrast stretched](docs/fullgrain/badseed_stretch.png)
+
+Zoomed 2x:
+
+![zoom](docs/fullgrain/badseed_zoom.png)
+
+Even with a typical seed, the standard tiling repeats; it's just less obvious
+by eye. Below is a second Black Swan stage frame encoded with an ordinary seed.
 The grain on its own (decoded with grain minus decoded without), contrast
 stretched:
 
