@@ -738,10 +738,16 @@ static ALWAYS_INLINE void ar_band(int16_t *const buf, const int bw, const int ro
                     vtaps16_avx2(acc[j], p, toff, cabs, ntap);
                 } else
 #endif
-                for (int i = 0; i < n[j]; i++) {
-                    int sum = 0;
-                    for (int t = 0; t < ntap; t++) sum += tcf[t] * p[i + toff[t]];
-                    acc[j][i] = sum;
+                {
+                    /* tap-outer order so the compiler vectorises the column loop */
+                    int32_t *const a = acc[j];
+                    const int nn = n[j];
+                    for (int i = 0; i < nn; i++) a[i] = 0;
+                    for (int t = 0; t < ntap; t++) {
+                        const int cf = tcf[t];
+                        const int16_t *const q = p + toff[t];
+                        for (int i = 0; i < nn; i++) a[i] += cf * q[i];
+                    }
                 }
                 if (has_luma) {
                     const int16_t *const lr = lbuf + ((r0 + j) << suby) * lbw + (c0[j] << subx);
