@@ -24,6 +24,7 @@
  *   DAV1D_GRAIN_MODE=standard|standard_c|multi|dual|full
  *   DAV1D_GRAIN_TEMPLATES=K   (multi/dual; default 16, 2..64)
  *   DAV1D_GRAIN_WARMUP=P      (full; default 16 rows, even, 4..64)
+ *   DAV1D_GRAIN_BANDS=G       (full; 32-row bands per warm-up, default 4, 1..8)
  *   DAV1D_GRAIN_STATS=1       (print grain CPU time per frame at close)
  */
 
@@ -51,8 +52,12 @@ typedef struct Dav1dFGVariant {
     enum Dav1dFGMode mode;
     int ntmpl;
     int warmup;
+    int bands;             /* full mode: 32-row bands per warm-up */
     int stats;
+    int avx2;              /* use the AVX2 kernels (x86-64, from dav1d's cpu flags) */
     void *tmpl;            /* ntmpl template sets, each [3][GRAIN_HEIGHT+1][GRAIN_WIDTH] */
+    int32_t *lut32;        /* [3][4096] scaling << (15 - scaling_shift), AVX2 path */
+    int32_t gtab[2048];    /* Gaussian table >> (gaussian shift), full mode */
     size_t tmpl_set_bytes; /* per-set stride (64-byte aligned), sized for 16 bpc */
     /* scratch buffers for the full-frame mode, one per concurrently running row */
     atomic_uint_fast64_t busy;

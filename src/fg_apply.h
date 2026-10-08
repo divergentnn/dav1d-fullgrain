@@ -60,6 +60,10 @@ bitfn_decls(void dav1d_apply_grain_row,
 bitfn_decls(void dav1d_fgv_prep,
             const Dav1dFilmGrainDSPContext *const dsp, Dav1dFGVariant *const fgv,
             const Dav1dPicture *const in, const Dav1dFilmGrainData *const data);
+bitfn_decls(void dav1d_fgv_prep_luts,
+            Dav1dFGVariant *const fgv, const Dav1dPicture *const in,
+            const Dav1dFilmGrainData *const data,
+            array_decl(const uint8_t, scaling, [3][SCALING_SIZE]));
 bitfn_decls(void dav1d_fgv_apply_row,
             Dav1dFGVariant *const fgv, Dav1dPicture *const out,
             const Dav1dPicture *const in,

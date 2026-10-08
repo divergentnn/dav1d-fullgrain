@@ -10,6 +10,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "src/cpu.h"
 #include "src/fg_variant.h"
 #include "src/filmgrain.h"
 #include "src/mem.h"
@@ -47,6 +48,7 @@ COLD void dav1d_fgv_init(Dav1dFGVariant *const fgv) {
     }
     fgv->ntmpl = env_int("DAV1D_GRAIN_TEMPLATES", 16, 2, FGV_MAX_TMPL);
     fgv->warmup = env_int("DAV1D_GRAIN_WARMUP", 16, 4, 64) & ~1;
+    fgv->bands = env_int("DAV1D_GRAIN_BANDS", 4, 1, 8);
     fgv->stats = env_int("DAV1D_GRAIN_STATS", 0, 0, 2);
     const size_t set = 3 * (GRAIN_HEIGHT + 1) * GRAIN_WIDTH * sizeof(int16_t);
     fgv->tmpl_set_bytes = (set + 63) & ~(size_t) 63;
@@ -55,9 +57,16 @@ COLD void dav1d_fgv_init(Dav1dFGVariant *const fgv) {
                                         fgv->tmpl_set_bytes * fgv->ntmpl, 64);
         if (!fgv->tmpl) fgv->mode = DAV1D_FGMODE_STANDARD;
     }
+#if ARCH_X86_64
+    fgv->avx2 = !!(dav1d_get_cpu_flags() & DAV1D_X86_CPU_FLAG_AVX2);
+#endif
+    if (fgv->mode >= DAV1D_FGMODE_MULTI && fgv->avx2) {
+        fgv->lut32 = dav1d_alloc_aligned(ALLOC_COMMON_CTX, 3 * 4096 * sizeof(int32_t), 64);
+        if (!fgv->lut32) fgv->avx2 = 0;
+    }
     if (fgv->stats)
-        fprintf(stderr, "dav1d-grain: mode=%s templates=%d warmup=%d\n",
-                mode_names[fgv->mode], fgv->ntmpl, fgv->warmup);
+        fprintf(stderr, "dav1d-grain: mode=%s templates=%d warmup=%d bands=%d avx2=%d\n",
+                mode_names[fgv->mode], fgv->ntmpl, fgv->warmup, fgv->bands, fgv->avx2);
 }
 
 COLD void dav1d_fgv_close(Dav1dFGVariant *const fgv) {
@@ -77,6 +86,7 @@ COLD void dav1d_fgv_close(Dav1dFGVariant *const fgv) {
         }
     }
     if (fgv->tmpl) dav1d_free_aligned(fgv->tmpl);
+    if (fgv->lut32) dav1d_free_aligned(fgv->lut32);
     for (int i = 0; i < FGV_MAX_SLOTS; i++)
         free(fgv->slot[i]);
     memset(fgv, 0, sizeof(*fgv));

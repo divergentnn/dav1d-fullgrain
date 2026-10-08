@@ -165,6 +165,9 @@ void bitfn(dav1d_prep_grain)(const Dav1dFilmGrainDSPContext *const dsp,
         }
     }
 
+    if (fgv->mode >= DAV1D_FGMODE_MULTI)
+        bitfn(dav1d_fgv_prep_luts)(fgv, in, data, (const uint8_t (*)[SCALING_SIZE]) scaling);
+
     if (fgv->stats) {
         atomic_fetch_add(&fgv->ns_prep, dav1d_fgv_thread_ns() - t0);
         atomic_fetch_add(&fgv->frames, 1);
