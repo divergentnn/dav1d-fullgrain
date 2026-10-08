@@ -37,6 +37,7 @@
 #include "common/bitdepth.h"
 
 #include "src/fg_apply.h"
+#include "src/fg_variant.h"
 
 static void generate_scaling(const int bitdepth,
                              const uint8_t points[][2], const int num,
@@ -98,6 +99,7 @@ static void generate_scaling(const int bitdepth,
 
 #ifndef UNIT_TEST
 void bitfn(dav1d_prep_grain)(const Dav1dFilmGrainDSPContext *const dsp,
+                             Dav1dFGVariant *const fgv,
                              Dav1dPicture *const out,
                              const Dav1dPicture *const in,
                              uint8_t scaling[3][SCALING_SIZE],
@@ -107,7 +109,12 @@ void bitfn(dav1d_prep_grain)(const Dav1dFilmGrainDSPContext *const dsp,
 #if BITDEPTH != 8
     const int bitdepth_max = (1 << out->p.bpc) - 1;
 #endif
+    const uint64_t t0 = fgv->stats ? dav1d_fgv_thread_ns() : 0;
 
+    if (fgv->mode == DAV1D_FGMODE_MULTI || fgv->mode == DAV1D_FGMODE_DUAL) {
+        // non-conformant: several templates per frame (src/fg_variant.h)
+        bitfn(dav1d_fgv_prep)(dsp, fgv, in, data);
+    } else if (fgv->mode != DAV1D_FGMODE_FULL) {
     // Generate grain LUTs as needed
     dsp->generate_grain_y(grain_lut[0], data HIGHBD_TAIL_SUFFIX); // always needed
     if (data->num_uv_points[0] || data->chroma_scaling_from_luma)
@@ -116,6 +123,7 @@ void bitfn(dav1d_prep_grain)(const Dav1dFilmGrainDSPContext *const dsp,
     if (data->num_uv_points[1] || data->chroma_scaling_from_luma)
         dsp->generate_grain_uv[in->p.layout - 1](grain_lut[2], grain_lut[0],
                                                  data, 1 HIGHBD_TAIL_SUFFIX);
+    }
 
     // Generate scaling LUTs as needed
     if (data->num_y_points || data->chroma_scaling_from_luma)
@@ -156,14 +164,20 @@ void bitfn(dav1d_prep_grain)(const Dav1dFilmGrainDSPContext *const dsp,
                 memcpy(out->data[2], in->data[2], sz);
         }
     }
+
+    if (fgv->stats) {
+        atomic_fetch_add(&fgv->ns_prep, dav1d_fgv_thread_ns() - t0);
+        atomic_fetch_add(&fgv->frames, 1);
+    }
 }
 
-void bitfn(dav1d_apply_grain_row)(const Dav1dFilmGrainDSPContext *const dsp,
-                                  Dav1dPicture *const out,
-                                  const Dav1dPicture *const in,
-                                  const uint8_t scaling[3][SCALING_SIZE],
-                                  const entry grain_lut[3][GRAIN_HEIGHT+1][GRAIN_WIDTH],
-                                  const int row)
+static void apply_grain_row_std(const fgy_32x32xn_fn fgy,
+                                const fguv_32x32xn_fn *const fguv,
+                                Dav1dPicture *const out,
+                                const Dav1dPicture *const in,
+                                const uint8_t scaling[3][SCALING_SIZE],
+                                const entry grain_lut[3][GRAIN_HEIGHT+1][GRAIN_WIDTH],
+                                const int row)
 {
     // Synthesize grain for the affected planes
     const Dav1dFilmGrainData *const data = &out->frame_hdr->film_grain.data;
@@ -179,7 +193,7 @@ void bitfn(dav1d_apply_grain_row)(const Dav1dFilmGrainDSPContext *const dsp,
 
     if (data->num_y_points) {
         const int bh = imin(out->p.h - row * FG_BLOCK_SIZE, FG_BLOCK_SIZE);
-        dsp->fgy_32x32xn(((pixel *) out->data[0]) + row * FG_BLOCK_SIZE * PXSTRIDE(out->stride[0]),
+        fgy(((pixel *) out->data[0]) + row * FG_BLOCK_SIZE * PXSTRIDE(out->stride[0]),
                          luma_src, out->stride[0], data,
                          out->p.w, scaling[0], grain_lut[0], bh, row HIGHBD_TAIL_SUFFIX);
     }
@@ -204,7 +218,7 @@ void bitfn(dav1d_apply_grain_row)(const Dav1dFilmGrainDSPContext *const dsp,
     const ptrdiff_t uv_off = row * FG_BLOCK_SIZE * PXSTRIDE(out->stride[1]) >> ss_y;
     if (data->chroma_scaling_from_luma) {
         for (int pl = 0; pl < 2; pl++)
-            dsp->fguv_32x32xn[in->p.layout - 1](((pixel *) out->data[1 + pl]) + uv_off,
+            fguv[in->p.layout - 1](((pixel *) out->data[1 + pl]) + uv_off,
                                                 ((const pixel *) in->data[1 + pl]) + uv_off,
                                                 in->stride[1], data, cpw,
                                                 scaling[0], grain_lut[1 + pl],
@@ -213,7 +227,7 @@ void bitfn(dav1d_apply_grain_row)(const Dav1dFilmGrainDSPContext *const dsp,
     } else {
         for (int pl = 0; pl < 2; pl++)
             if (data->num_uv_points[pl])
-                dsp->fguv_32x32xn[in->p.layout - 1](((pixel *) out->data[1 + pl]) + uv_off,
+                fguv[in->p.layout - 1](((pixel *) out->data[1 + pl]) + uv_off,
                                                     ((const pixel *) in->data[1 + pl]) + uv_off,
                                                     in->stride[1], data, cpw,
                                                     scaling[1 + pl], grain_lut[1 + pl],
@@ -222,7 +236,37 @@ void bitfn(dav1d_apply_grain_row)(const Dav1dFilmGrainDSPContext *const dsp,
     }
 }
 
+void bitfn(dav1d_apply_grain_row)(const Dav1dFilmGrainDSPContext *const dsp,
+                                  Dav1dFGVariant *const fgv,
+                                  Dav1dPicture *const out,
+                                  const Dav1dPicture *const in,
+                                  const uint8_t scaling[3][SCALING_SIZE],
+                                  const entry grain_lut[3][GRAIN_HEIGHT+1][GRAIN_WIDTH],
+                                  const int row)
+{
+    const uint64_t t0 = fgv->stats ? dav1d_fgv_thread_ns() : 0;
+    switch (fgv->mode) {
+    case DAV1D_FGMODE_STANDARD:
+        apply_grain_row_std(dsp->fgy_32x32xn, dsp->fguv_32x32xn,
+                            out, in, scaling, grain_lut, row);
+        break;
+    case DAV1D_FGMODE_STANDARD_C:
+        apply_grain_row_std(dsp->fgy_32x32xn_c, dsp->fguv_32x32xn_c,
+                            out, in, scaling, grain_lut, row);
+        break;
+    default:
+        // non-conformant variants (src/fg_variant.h)
+        bitfn(dav1d_fgv_apply_row)(fgv, out, in, scaling, row);
+        break;
+    }
+    if (fgv->stats) {
+        atomic_fetch_add(&fgv->ns_rows, dav1d_fgv_thread_ns() - t0);
+        atomic_fetch_add(&fgv->rows, 1);
+    }
+}
+
 void bitfn(dav1d_apply_grain)(const Dav1dFilmGrainDSPContext *const dsp,
+                              Dav1dFGVariant *const fgv,
                               Dav1dPicture *const out,
                               const Dav1dPicture *const in)
 {
@@ -234,8 +278,8 @@ void bitfn(dav1d_apply_grain)(const Dav1dFilmGrainDSPContext *const dsp,
 #endif
     const int rows = (out->p.h + FG_BLOCK_SIZE - 1) / FG_BLOCK_SIZE;
 
-    bitfn(dav1d_prep_grain)(dsp, out, in, scaling, grain_lut);
+    bitfn(dav1d_prep_grain)(dsp, fgv, out, in, scaling, grain_lut);
     for (int row = 0; row < rows; row++)
-        bitfn(dav1d_apply_grain_row)(dsp, out, in, scaling, grain_lut, row);
+        bitfn(dav1d_apply_grain_row)(dsp, fgv, out, in, scaling, grain_lut, row);
 }
 #endif

@@ -487,7 +487,7 @@ static inline void delayed_fg_task(const Dav1dContext *const c,
         switch (out->p.bpc) {
 #if CONFIG_8BPC
         case 8:
-            dav1d_prep_grain_8bpc(&c->dsp[0].fg, out, in,
+            dav1d_prep_grain_8bpc(&c->dsp[0].fg, (Dav1dFGVariant *) &c->fgv, out, in,
                                   ttd->delayed_fg.scaling_8bpc,
                                   ttd->delayed_fg.grain_lut_8bpc);
             break;
@@ -495,7 +495,7 @@ static inline void delayed_fg_task(const Dav1dContext *const c,
 #if CONFIG_16BPC
         case 10:
         case 12:
-            dav1d_prep_grain_16bpc(&c->dsp[off].fg, out, in,
+            dav1d_prep_grain_16bpc(&c->dsp[off].fg, (Dav1dFGVariant *) &c->fgv, out, in,
                                    ttd->delayed_fg.scaling_16bpc,
                                    ttd->delayed_fg.grain_lut_16bpc);
             break;
@@ -521,7 +521,7 @@ static inline void delayed_fg_task(const Dav1dContext *const c,
             switch (out->p.bpc) {
 #if CONFIG_8BPC
             case 8:
-                dav1d_apply_grain_row_8bpc(&c->dsp[0].fg, out, in,
+                dav1d_apply_grain_row_8bpc(&c->dsp[0].fg, (Dav1dFGVariant *) &c->fgv, out, in,
                                            ttd->delayed_fg.scaling_8bpc,
                                            ttd->delayed_fg.grain_lut_8bpc, row);
                 break;
@@ -529,7 +529,7 @@ static inline void delayed_fg_task(const Dav1dContext *const c,
 #if CONFIG_16BPC
             case 10:
             case 12:
-                dav1d_apply_grain_row_16bpc(&c->dsp[off].fg, out, in,
+                dav1d_apply_grain_row_16bpc(&c->dsp[off].fg, (Dav1dFGVariant *) &c->fgv, out, in,
                                             ttd->delayed_fg.scaling_16bpc,
                                             ttd->delayed_fg.grain_lut_16bpc, row);
                 break;

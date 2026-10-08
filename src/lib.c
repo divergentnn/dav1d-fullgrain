@@ -176,6 +176,7 @@ COLD int dav1d_open(Dav1dContext **const c_out, const Dav1dSettings *const s) {
     c->output_invisible_frames = s->output_invisible_frames;
     c->inloop_filters = s->inloop_filters;
     c->decode_frame_type = s->decode_frame_type;
+    dav1d_fgv_init(&c->fgv);
 
     dav1d_data_props_set_defaults(&c->cached_error_props);
 
@@ -503,13 +504,13 @@ int dav1d_apply_grain(Dav1dContext *const c, Dav1dPicture *const out,
         switch (out->p.bpc) {
 #if CONFIG_8BPC
         case 8:
-            dav1d_apply_grain_8bpc(&c->dsp[0].fg, out, in);
+            dav1d_apply_grain_8bpc(&c->dsp[0].fg, &c->fgv, out, in);
             break;
 #endif
 #if CONFIG_16BPC
         case 10:
         case 12:
-            dav1d_apply_grain_16bpc(&c->dsp[(out->p.bpc >> 1) - 4].fg, out, in);
+            dav1d_apply_grain_16bpc(&c->dsp[(out->p.bpc >> 1) - 4].fg, &c->fgv, out, in);
             break;
 #endif
         default: abort();
@@ -701,6 +702,7 @@ static COLD void close_internal(Dav1dContext **const c_out, int flush) {
     dav1d_mem_pool_end(c->picture_pool);
     dav1d_mem_pool_end(c->pic_ctx_pool);
 
+    dav1d_fgv_close(&c->fgv);
     dav1d_freep_aligned(c_out);
 }
 

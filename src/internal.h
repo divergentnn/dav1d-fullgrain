@@ -42,6 +42,7 @@ typedef struct Dav1dTask Dav1dTask;
 #include "src/cdef.h"
 #include "src/cdf.h"
 #include "src/data.h"
+#include "src/fg_variant.h"
 #include "src/env.h"
 #include "src/filmgrain.h"
 #include "src/intra_edge.h"
@@ -180,6 +181,7 @@ struct Dav1dContext {
 
     Dav1dPicAllocator allocator;
     int apply_grain;
+    Dav1dFGVariant fgv; // non-conformant grain synthesis variants (src/fg_variant.h)
     int operating_point;
     unsigned operating_point_idc;
     int all_layers;

@@ -433,6 +433,11 @@ COLD void bitfn(dav1d_film_grain_dsp_init)(Dav1dFilmGrainDSPContext *const c) {
     c->fguv_32x32xn[DAV1D_PIXEL_LAYOUT_I422 - 1] = fguv_32x32xn_422_c;
     c->fguv_32x32xn[DAV1D_PIXEL_LAYOUT_I444 - 1] = fguv_32x32xn_444_c;
 
+    c->fgy_32x32xn_c = fgy_32x32xn_c;
+    c->fguv_32x32xn_c[DAV1D_PIXEL_LAYOUT_I420 - 1] = fguv_32x32xn_420_c;
+    c->fguv_32x32xn_c[DAV1D_PIXEL_LAYOUT_I422 - 1] = fguv_32x32xn_422_c;
+    c->fguv_32x32xn_c[DAV1D_PIXEL_LAYOUT_I444 - 1] = fguv_32x32xn_444_c;
+
 #if HAVE_ASM
 #if ARCH_AARCH64 || ARCH_ARM
     film_grain_dsp_init_arm(c);

@@ -77,6 +77,10 @@ typedef struct Dav1dFilmGrainDSPContext {
 
     fgy_32x32xn_fn fgy_32x32xn;
     fguv_32x32xn_fn fguv_32x32xn[3];
+
+    /* C reference versions (kept for DAV1D_GRAIN_MODE=standard_c) */
+    fgy_32x32xn_fn fgy_32x32xn_c;
+    fguv_32x32xn_fn fguv_32x32xn_c[3];
 } Dav1dFilmGrainDSPContext;
 
 bitfn_decls(void dav1d_film_grain_dsp_init, Dav1dFilmGrainDSPContext *c);

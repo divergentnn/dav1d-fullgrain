@@ -33,6 +33,7 @@
 #include "common/bitdepth.h"
 
 #include "src/filmgrain.h"
+#include "src/fg_variant.h"
 
 #ifdef BITDEPTH
 # define array_decl(type, name, sz) type name sz
@@ -41,18 +42,28 @@
 #endif
 
 bitfn_decls(void dav1d_apply_grain,
-            const Dav1dFilmGrainDSPContext *const dsp,
+            const Dav1dFilmGrainDSPContext *const dsp, Dav1dFGVariant *const fgv,
             Dav1dPicture *const out, const Dav1dPicture *const in);
 bitfn_decls(void dav1d_prep_grain,
-            const Dav1dFilmGrainDSPContext *const dsp,
+            const Dav1dFilmGrainDSPContext *const dsp, Dav1dFGVariant *const fgv,
             Dav1dPicture *const out, const Dav1dPicture *const in,
             array_decl(uint8_t, scaling, [3][SCALING_SIZE]),
             array_decl(entry, grain_lut, [3][GRAIN_HEIGHT+1][GRAIN_WIDTH]));
 bitfn_decls(void dav1d_apply_grain_row,
-            const Dav1dFilmGrainDSPContext *const dsp,
+            const Dav1dFilmGrainDSPContext *const dsp, Dav1dFGVariant *const fgv,
             Dav1dPicture *const out, const Dav1dPicture *const in,
             array_decl(const uint8_t, scaling, [3][SCALING_SIZE]),
             array_decl(const entry, grain_lut, [3][GRAIN_HEIGHT+1][GRAIN_WIDTH]),
+            const int row);
+
+/* non-conformant synthesis variants, see src/fg_variant.h */
+bitfn_decls(void dav1d_fgv_prep,
+            const Dav1dFilmGrainDSPContext *const dsp, Dav1dFGVariant *const fgv,
+            const Dav1dPicture *const in, const Dav1dFilmGrainData *const data);
+bitfn_decls(void dav1d_fgv_apply_row,
+            Dav1dFGVariant *const fgv, Dav1dPicture *const out,
+            const Dav1dPicture *const in,
+            array_decl(const uint8_t, scaling, [3][SCALING_SIZE]),
             const int row);
 
 #endif /* DAV1D_SRC_FG_APPLY_H */
