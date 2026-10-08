@@ -1,0 +1,27 @@
+#!/bin/sh
+# Play with dav1d-fullgrain WITHOUT installing it (Linux and macOS).
+#
+#   contrib/mpv/mpv-fullgrain [full|dual|multi|standard] FILE [mpv options]
+#
+# Uses the library in <checkout>/build/src (override: DAV1D_FULLGRAIN_LIB).
+# Keys: g cycles modes, b = blind A/B standard vs full, B reveals the mapping.
+here=$(cd "$(dirname "$0")" && pwd)
+lib=${DAV1D_FULLGRAIN_LIB:-$here/../../build/src}
+mode=full
+case "${1:-}" in
+    standard|standard_c|multi|dual|full) mode=$1; shift ;;
+esac
+mf="${TMPDIR:-/tmp}/dav1d-grain-mode.$$"
+echo "$mode" > "$mf"
+case "$(uname -s)" in
+    Darwin) DYLD_LIBRARY_PATH="$lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+            export DYLD_LIBRARY_PATH ;;
+    *)      LD_LIBRARY_PATH="$lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export LD_LIBRARY_PATH ;;
+esac
+DAV1D_GRAIN_MODE=$mode DAV1D_GRAIN_MODE_FILE=$mf \
+    mpv --hwdec-codecs=h264,vc1,hevc,vp8,vp9,prores,prores_raw,ffv1,dpx \
+        --vd-lavc-film-grain=cpu --script="$here/grain-mode.lua" "$@"
+rc=$?
+rm -f "$mf"
+exit $rc
