@@ -308,7 +308,7 @@ ar_band_skew_avx2(int16_t *const out, int16_t *const skewbuf, const SkewDims *co
         }
     }
 }
-#elif ARCH_AARCH64
+#elif FGV_NEON
 /*
  * NEON version: same skewed layout, same 16 lanes (two int16x8 registers,
  * rows r0..r0+7 and r0+8..r0+15), same arithmetic. Taps use widening

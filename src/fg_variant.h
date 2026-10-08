@@ -45,6 +45,16 @@
 #include "common/attributes.h"
 #include <stdatomic.h>
 
+/* NEON kernels: native on aarch64; in WebAssembly builds with SIMD128 the
+ * same intrinsics compile through emscripten's SIMDe-based arm_neon.h */
+#if ARCH_AARCH64
+#define FGV_NEON 1
+#elif defined(__EMSCRIPTEN__) && defined(__wasm_simd128__)
+#define FGV_NEON 1
+#else
+#define FGV_NEON 0
+#endif
+
 enum Dav1dFGMode {
     DAV1D_FGMODE_STANDARD = 0,
     DAV1D_FGMODE_STANDARD_C,

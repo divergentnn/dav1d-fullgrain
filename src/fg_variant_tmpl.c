@@ -34,7 +34,7 @@
 #define FGV_AVX2 __attribute__((target("avx2")))
 #define FGV_TSC() __rdtsc()
 #else
-#if ARCH_AARCH64
+#if FGV_NEON
 #include <arm_neon.h>
 #endif
 #define FGV_TSC() 0
@@ -233,7 +233,7 @@ static inline FGV_AVX2 int apply_uv_avx2(pixel *const dst, const pixel *const sr
 }
 #endif
 
-#if ARCH_AARCH64
+#if FGV_NEON
 /* NEON: vqrdmulh(sc << (15 - shift), g) == round2(sc * g, shift), exactly
  * like pmulhrsw on x86. NEON has no gather, so the scaling LUT is read with
  * scalar loads. */
@@ -334,7 +334,7 @@ static ALWAYS_INLINE void apply_y_rows(pixel *const dst_row, const pixel *const 
         int x = 0;
 #if ARCH_X86_64
         if (simd) x = apply_y_avx2(dst, src, g, w, A);
-#elif ARCH_AARCH64
+#elif FGV_NEON
         if (simd) x = apply_y_neon(dst, src, g, w, A);
 #endif
         for (; x < w; x++) {
@@ -362,7 +362,7 @@ static ALWAYS_INLINE void apply_uv_rows(pixel *const dst_row, const pixel *const
         int x = 0;
 #if ARCH_X86_64
         if (simd) x = apply_uv_avx2(dst, src, luma, g, w, A);
-#elif ARCH_AARCH64
+#elif FGV_NEON
         if (simd) x = apply_uv_neon(dst, src, luma, g, w, A);
 #endif
         for (; x < w; x++) {
@@ -577,7 +577,7 @@ static inline FGV_AVX2 int mix_row_avx2(int16_t *const a, const int16_t *const b
     }
     return x;
 }
-#elif ARCH_AARCH64
+#elif FGV_NEON
 static inline int mix_row_neon(int16_t *const a, const int16_t *const b,
                                const int w, const int gmin, const int gmax)
 {
@@ -601,7 +601,7 @@ static ALWAYS_INLINE void mix_layers(int16_t *const ga, const int16_t *const gb,
         int x = 0;
 #if ARCH_X86_64
         if (simd) x = mix_row_avx2(a, b, w, gmin, gmax);
-#elif ARCH_AARCH64
+#elif FGV_NEON
         if (simd) x = mix_row_neon(a, b, w, gmin, gmax);
 #endif
         for (; x < w; x++)
@@ -904,8 +904,11 @@ static ALWAYS_INLINE void fgv_full_row(Dav1dFGVariant *const fgv, Dav1dPicture *
     /* field pointers: (band row 0, column 0) and strides */
     const int16_t *lf = NULL, *cf = NULL;
     ptrdiff_t lfs = 0, cfs = 0;
-    int16_t *lbuf = NULL, *cbuf = NULL, *skb = NULL, *ltb = NULL;
+    int16_t *lbuf = NULL, *cbuf = NULL, *skb = NULL;
+#if ARCH_X86_64 || FGV_NEON
+    int16_t *ltb = NULL;
     int ltdone = 0;
+#endif
     int32_t *acc = NULL;
     SkewDims ld, cd;
 
@@ -919,7 +922,9 @@ static ALWAYS_INLINE void fgv_full_row(Dav1dFGVariant *const fgv, Dav1dPicture *
         skb = (int16_t *) scratch;
         lbuf = skb + nsk + 16;
         cbuf = lbuf + ld.out_elems + 16;
+#if ARCH_X86_64 || FGV_NEON
         ltb = cbuf + cd.out_elems + 16;
+#endif
         lf = lbuf + SK_PADL;
         lfs = ld.ostr;
         cf = cbuf + SK_PADL;
@@ -945,7 +950,7 @@ static ALWAYS_INLINE void fgv_full_row(Dav1dFGVariant *const fgv, Dav1dPicture *
                               data->ar_coeffs_y, lag, (int) data->ar_coeff_shift, gmin, gmax,
                               NULL, 0);
         } else
-#elif ARCH_AARCH64
+#elif FGV_NEON
         if (simd) {
             ar_band_skew_neon(lbuf, skb, &ld, ykey, Y0 - P, -FGV_XL, fgv->gtab,
                               data->ar_coeffs_y, lag, (int) data->ar_coeff_shift, gmin, gmax,
@@ -994,7 +999,7 @@ static ALWAYS_INLINE void fgv_full_row(Dav1dFGVariant *const fgv, Dav1dPicture *
                                   data->ar_coeffs_uv[pl], lag, (int) data->ar_coeff_shift, gmin, gmax,
                                   lc ? ltb : NULL, lc);
             } else
-#elif ARCH_AARCH64
+#elif FGV_NEON
             if (simd) {
                 if (lc && !ltdone) {
                     lumaterm_rows_neon(ltb, cd.ostr, lf, lfs, crows, cbw, ss_x, ss_y);
@@ -1104,7 +1109,7 @@ static NOINLINE void fgv_apply_row_c(Dav1dFGVariant *const fgv, Dav1dPicture *co
     fgv_apply_row_impl(fgv, out, in, scaling, row, 0);
 }
 
-#if ARCH_AARCH64
+#if FGV_NEON
 static NOINLINE void fgv_apply_row_neon(Dav1dFGVariant *const fgv, Dav1dPicture *const out,
                                         const Dav1dPicture *const in,
                                         const uint8_t scaling[3][SCALING_SIZE],
@@ -1134,7 +1139,7 @@ void bitfn(dav1d_fgv_apply_row)(Dav1dFGVariant *const fgv, Dav1dPicture *const o
         fgv_apply_row_avx2(fgv, out, in, scaling, row);
         return;
     }
-#elif ARCH_AARCH64
+#elif FGV_NEON
     if (fgv->simd) {
         fgv_apply_row_neon(fgv, out, in, scaling, row);
         return;

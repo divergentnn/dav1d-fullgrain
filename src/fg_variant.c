@@ -77,6 +77,8 @@ COLD void dav1d_fgv_init(Dav1dFGVariant *const fgv) {
     fgv->simd = !!(dav1d_get_cpu_flags() & DAV1D_X86_CPU_FLAG_AVX2);
 #elif ARCH_AARCH64
     fgv->simd = !!(dav1d_get_cpu_flags() & DAV1D_ARM_CPU_FLAG_NEON);
+#elif FGV_NEON
+    fgv->simd = 1; /* WebAssembly SIMD128 build */
 #endif
     if (!env_int("DAV1D_GRAIN_SIMD", 1, 0, 1)) fgv->simd = 0;
 #ifdef DAV1D_GRAIN_MODE_DEFAULT
