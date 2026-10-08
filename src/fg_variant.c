@@ -1,4 +1,8 @@
 /*
+ * Copyright © 2026, divergentnn (dav1d-fullgrain)
+ * SPDX-License-Identifier: BSD-2-Clause
+ * (the same terms as dav1d, see COPYING)
+ *
  * Film grain synthesis variants: runtime configuration, scratch buffers and
  * statistics. See src/fg_variant.h. NON-CONFORMANT by design.
  */

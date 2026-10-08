@@ -1,5 +1,9 @@
 /*
- * Full-frame AR film grain: AVX2 kernel (included by fg_variant_tmpl.c).
+ * Copyright © 2026, divergentnn (dav1d-fullgrain)
+ * SPDX-License-Identifier: BSD-2-Clause
+ * (the same terms as dav1d, see COPYING)
+ *
+ * Full-frame AR film grain: AVX2 and NEON kernels (included by fg_variant_tmpl.c).
  *
  * The AR recursion is causal: sample (r, c) needs (r, c-1..c-3) and the three
  * rows above at columns c-3..c+3. A plain raster scan is a scalar dependency

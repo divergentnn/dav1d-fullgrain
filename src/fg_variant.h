@@ -1,4 +1,8 @@
 /*
+ * Copyright © 2026, divergentnn (dav1d-fullgrain)
+ * SPDX-License-Identifier: BSD-2-Clause
+ * (the same terms as dav1d, see COPYING)
+ *
  * Film grain synthesis variants (NON-CONFORMANT, personal-playback fork).
  *
  * The AV1 spec (7.18.3.5) fills every frame with 32x32 crops taken at one of
