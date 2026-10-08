@@ -287,7 +287,7 @@ static void setup_apply(FGApply *const A, const Dav1dFGVariant *const fgv,
 {
     const int bitdepth_min_8 = bitdepth_from_max(bitdepth_max) - 8;
     A->scaling = scaling;
-    A->lut32 = fgv->avx2 ? fgv->lut32 + lut_pl * 4096 : NULL;
+    A->lut32 = fgv->avx2 && fgv->lut32 ? fgv->lut32 + lut_pl * 4096 : NULL;
     A->shift = data->scaling_shift;
     if (data->clip_to_restricted_range) {
         A->min_value = 16 << bitdepth_min_8;
@@ -1036,7 +1036,7 @@ void bitfn(dav1d_fgv_apply_row)(Dav1dFGVariant *const fgv, Dav1dPicture *const o
                                 const uint8_t scaling[3][SCALING_SIZE], const int row)
 {
 #if ARCH_X86_64
-    if (fgv->avx2) {
+    if (fgv->avx2 && fgv->lut32) {
         fgv_apply_row_avx2(fgv, out, in, scaling, row);
         return;
     }

@@ -110,6 +110,7 @@ void bitfn(dav1d_prep_grain)(const Dav1dFilmGrainDSPContext *const dsp,
     const int bitdepth_max = (1 << out->p.bpc) - 1;
 #endif
     const uint64_t t0 = fgv->stats ? dav1d_fgv_thread_ns() : 0;
+    dav1d_fgv_poll(fgv);
 
     if (fgv->mode == DAV1D_FGMODE_MULTI || fgv->mode == DAV1D_FGMODE_DUAL) {
         // non-conformant: several templates per frame (src/fg_variant.h)

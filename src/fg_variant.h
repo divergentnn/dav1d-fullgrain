@@ -26,6 +26,8 @@
  *   DAV1D_GRAIN_WARMUP=P      (full; default 16 rows, even, 4..64)
  *   DAV1D_GRAIN_BANDS=G       (full; 32-row bands per warm-up, default 4, 1..8)
  *   DAV1D_GRAIN_STATS=1       (print grain CPU time per frame at close)
+ *   DAV1D_GRAIN_MODE_FILE=path  (re-read the mode from this file while decoding,
+ *                              at most every 100 ms; for live A/B in a player)
  */
 
 #ifndef DAV1D_SRC_FG_VARIANT_H
@@ -58,6 +60,8 @@ typedef struct Dav1dFGVariant {
     void *tmpl;            /* ntmpl template sets, each [3][GRAIN_HEIGHT+1][GRAIN_WIDTH] */
     int32_t *lut32;        /* [3][4096] scaling << (15 - scaling_shift), AVX2 path */
     int32_t gtab[2048];    /* Gaussian table >> (gaussian shift), full mode */
+    char *mode_file;       /* DAV1D_GRAIN_MODE_FILE */
+    uint64_t last_poll;
     size_t tmpl_set_bytes; /* per-set stride (64-byte aligned), sized for 16 bpc */
     /* scratch buffers for the full-frame mode, one per concurrently running row */
     atomic_uint_fast64_t busy;
@@ -70,6 +74,7 @@ typedef struct Dav1dFGVariant {
 
 void dav1d_fgv_init(Dav1dFGVariant *fgv);
 void dav1d_fgv_close(Dav1dFGVariant *fgv);
+void dav1d_fgv_poll(Dav1dFGVariant *fgv);
 void *dav1d_fgv_scratch_get(Dav1dFGVariant *fgv, size_t sz, int *slot);
 void dav1d_fgv_scratch_put(Dav1dFGVariant *fgv, int slot, void *buf);
 uint64_t dav1d_fgv_thread_ns(void);
