@@ -74,3 +74,8 @@ option('grain_mode_default',
     choices: ['full', 'standard', 'standard_c', 'dual', 'multi'],
     value: 'full',
     description: 'dav1d-fullgrain: default film grain synthesis (DAV1D_GRAIN_MODE overrides it at runtime; standard = conformant AV1 grain)')
+
+option('grain_force',
+    type: 'boolean',
+    value: true,
+    description: 'dav1d-fullgrain: apply the non-standard grain even when the caller turned grain off, and hide the grain parameters from it (players that would draw standard grain on the GPU, e.g. mpv + libplacebo). DAV1D_GRAIN_FORCE=0/1 overrides it at runtime')

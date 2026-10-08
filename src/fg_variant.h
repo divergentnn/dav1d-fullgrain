@@ -73,6 +73,9 @@ typedef struct Dav1dFGVariant {
     int bands;             /* full mode: 32-row bands per warm-up */
     int stats;
     int simd;              /* SIMD kernels: AVX2 on x86-64, NEON on aarch64 */
+    int force;             /* apply the variant even when the caller turned grain off (and hide the
+                            * grain parameters from it): players that hand AV1 grain to the GPU
+                            * (mpv + libplacebo) would otherwise draw standard grain */
     void *tmpl;            /* ntmpl template sets, each [3][GRAIN_HEIGHT+1][GRAIN_WIDTH] */
     int32_t *lut32;        /* [3][4096] scaling << (15 - scaling_shift), AVX2 path only */
     int32_t gtab[2048];    /* Gaussian table >> (gaussian shift), full mode */

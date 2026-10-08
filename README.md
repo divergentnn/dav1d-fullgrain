@@ -199,19 +199,25 @@ Homebrew's mpv.
 
 ### mpv settings (Linux and macOS)
 
-The fork only matters when dav1d decodes the AV1 *and* applies the grain.
-mpv does neither if it uses hardware decoding, or if its `gpu-next` renderer
-draws standard grain on the GPU. Add this to `~/.config/mpv/mpv.conf`:
+The fork only matters when dav1d decodes the AV1.
+
+- **Grain on the GPU: handled.** mpv's `gpu-next` renderer normally asks the
+  decoder to leave grain out and draws standard AV1 grain itself
+  (`vd-lavc-film-grain=auto`). The fork still applies full-frame grain in that
+  case and hides the grain parameters, so nothing is drawn twice. This is the
+  `grain_force` option, on by default; `DAV1D_GRAIN_FORCE=0` restores the
+  upstream behaviour.
+- **Hardware decoding: needs one line.** With hardware decoding, dav1d isn't
+  used at all. That applies to Macs with M3 or later and to most recent PC
+  GPUs, if mpv's `hwdec` is on. Keep AV1 in software and everything else in
+  hardware with this line in `~/.config/mpv/mpv.conf`:
 
 ```ini
 # AV1 in software (dav1d); every other codec keeps hardware decoding
 hwdec-codecs=h264,vc1,hevc,vp8,vp9,prores,prores_raw,ffv1,dpx
-# grain drawn by the decoder, not by mpv's GPU renderer
-vd-lavc-film-grain=cpu
 ```
 
-That list is mpv 0.41's default without `av1`; Macs with M3 or later decode
-AV1 in hardware, so the same applies there. The file is also at
+That list is mpv 0.41's default without `av1`. The file is also at
 [contrib/mpv/mpv.conf](contrib/mpv/mpv.conf).
 
 **Live A/B.** Load [contrib/mpv/grain-mode.lua](contrib/mpv/grain-mode.lua)
@@ -231,6 +237,7 @@ to any writable path before starting mpv):
 | `DAV1D_GRAIN_SIMD=0` | use the C paths (testing) |
 | `DAV1D_GRAIN_TEMPLATES`, `DAV1D_GRAIN_WARMUP`, `DAV1D_GRAIN_BANDS` | tuning for multi/dual (16) and full (16 rows, 4 bands) |
 | meson `-Dgrain_mode_default=full\|standard\|dual\|multi` | built-in default (`full` in this fork) |
+| `DAV1D_GRAIN_FORCE=0\|1`, meson `-Dgrain_force=true\|false` | apply the variant even when the player turned grain off, hiding the grain parameters from it (default on; off = upstream behaviour) |
 
 ## Caveats
 

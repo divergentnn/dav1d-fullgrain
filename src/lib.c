@@ -309,13 +309,35 @@ static int has_grain(const Dav1dPicture *const pic)
                                         fgdata->chroma_scaling_from_luma);
 }
 
+/* dav1d-fullgrain: give the output picture its own frame header with the film
+ * grain switched off, so the caller (which asked for no grain) neither exports
+ * the parameters nor applies standard grain on top of ours. */
+static int strip_grain_params(Dav1dPicture *const p) {
+    Dav1dRef *const ref = dav1d_ref_create(ALLOC_OBU_HDR, sizeof(Dav1dFrameHeader));
+    if (!ref) return DAV1D_ERR(ENOMEM);
+    Dav1dFrameHeader *const hdr = ref->data;
+    memcpy(hdr, p->frame_hdr, sizeof(*hdr));
+    hdr->film_grain.present = 0;
+    hdr->film_grain.update = 0;
+    memset(&hdr->film_grain.data, 0, sizeof(hdr->film_grain.data));
+    dav1d_ref_dec(&p->frame_hdr_ref);
+    p->frame_hdr_ref = ref;
+    p->frame_hdr = hdr;
+    return 0;
+}
+
 static int output_image(Dav1dContext *const c, Dav1dPicture *const out)
 {
     int res = 0;
 
     Dav1dThreadPicture *const in = (c->all_layers || !c->max_spatial_id)
                                    ? &c->out : &c->cache;
-    if (!c->apply_grain || !has_grain(&in->p)) {
+    /* dav1d-fullgrain: a caller that turned grain off (e.g. ffmpeg exporting it
+     * to mpv/libplacebo) still gets the full-frame variant, unless
+     * DAV1D_GRAIN_FORCE=0 or a conformant mode is selected */
+    const int force = !c->apply_grain && c->fgv.force &&
+                      c->fgv.mode >= DAV1D_FGMODE_MULTI && has_grain(&in->p);
+    if ((!c->apply_grain && !force) || !has_grain(&in->p)) {
         dav1d_picture_move_ref(out, &in->p);
         dav1d_thread_picture_unref(in);
         goto end;
@@ -323,6 +345,10 @@ static int output_image(Dav1dContext *const c, Dav1dPicture *const out)
 
     res = dav1d_apply_grain(c, out, &in->p);
     dav1d_thread_picture_unref(in);
+    if (force && res >= 0) {
+        res = strip_grain_params(out);
+        if (res < 0) dav1d_picture_unref_internal(out);
+    }
 end:
     if (!c->all_layers && c->max_spatial_id && c->out.p.data[0]) {
         dav1d_thread_picture_move_ref(in, &c->out);

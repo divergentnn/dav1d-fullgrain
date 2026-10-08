@@ -81,6 +81,11 @@ COLD void dav1d_fgv_init(Dav1dFGVariant *const fgv) {
     fgv->simd = 1; /* WebAssembly SIMD128 build */
 #endif
     if (!env_int("DAV1D_GRAIN_SIMD", 1, 0, 1)) fgv->simd = 0;
+#ifdef DAV1D_GRAIN_FORCE_DEFAULT
+    fgv->force = env_int("DAV1D_GRAIN_FORCE", DAV1D_GRAIN_FORCE_DEFAULT, 0, 1);
+#else
+    fgv->force = env_int("DAV1D_GRAIN_FORCE", 0, 0, 1);
+#endif
 #ifdef DAV1D_GRAIN_MODE_DEFAULT
     if (parse_mode(DAV1D_GRAIN_MODE_DEFAULT) >= 0)
         set_mode(fgv, parse_mode(DAV1D_GRAIN_MODE_DEFAULT));
@@ -95,8 +100,8 @@ COLD void dav1d_fgv_init(Dav1dFGVariant *const fgv) {
         dav1d_fgv_poll(fgv);
     }
     if (fgv->stats)
-        fprintf(stderr, "dav1d-grain: mode=%s templates=%d warmup=%d bands=%d simd=%d%s%s\n",
-                mode_names[fgv->mode], fgv->ntmpl, fgv->warmup, fgv->bands, fgv->simd,
+        fprintf(stderr, "dav1d-grain: mode=%s templates=%d warmup=%d bands=%d simd=%d force=%d%s%s\n",
+                mode_names[fgv->mode], fgv->ntmpl, fgv->warmup, fgv->bands, fgv->simd, fgv->force,
                 fgv->mode_file ? " mode_file=" : "", fgv->mode_file ? fgv->mode_file : "");
 }
 

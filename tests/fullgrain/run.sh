@@ -21,7 +21,7 @@ FORK=$1
 UP=${2:-}
 DEFAULT_MODE=${DEFAULT_MODE:-full}
 DIR=$(cd "$(dirname "$0")" && pwd)
-unset DAV1D_GRAIN_MODE DAV1D_GRAIN_SIMD DAV1D_GRAIN_MODE_FILE DAV1D_GRAIN_STATS
+unset DAV1D_GRAIN_MODE DAV1D_GRAIN_SIMD DAV1D_GRAIN_MODE_FILE DAV1D_GRAIN_STATS DAV1D_GRAIN_FORCE
 fail=0
 n=0
 
@@ -49,6 +49,20 @@ while read -r name mode want; do
             "$("$FORK" -q -i "$f" --muxer md5 -o - --filmgrain 1)" "$want"
     fi
 done < "$DIR/expected.md5"
+
+# grain_force (default on): a caller that turns grain off (--filmgrain 0, as
+# ffmpeg does for mpv's GPU grain) still gets the default variant; with
+# DAV1D_GRAIN_FORCE=0, or in standard mode, it gets no grain (upstream
+# behaviour). Checked on the first stream of the default mode.
+first=$(awk -v m="$DEFAULT_MODE" '$1 !~ /^#/ && $2 == m {print $1, $3; exit}' "$DIR/expected.md5")
+if [ -n "$first" ] && [ "$DEFAULT_MODE" != standard ] && [ "$DEFAULT_MODE" != standard_c ]; then
+    f="$DIR/${first%% *}"; want="${first#* }"
+    nog=$(DAV1D_GRAIN_MODE=standard "$FORK" -q -i "$f" --muxer md5 -o - --filmgrain 0)
+    check "${first%% *} force: grain off -> $DEFAULT_MODE" \
+        "$("$FORK" -q -i "$f" --muxer md5 -o - --filmgrain 0)" "$want"
+    check "${first%% *} DAV1D_GRAIN_FORCE=0: grain off -> none" \
+        "$(DAV1D_GRAIN_FORCE=0 "$FORK" -q -i "$f" --muxer md5 -o - --filmgrain 0)" "$nog"
+fi
 
 if [ -n "$UP" ]; then
     for f in "$DIR"/*.ivf; do

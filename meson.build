@@ -88,6 +88,7 @@ cdata.set10('CONFIG_LOG', get_option('logging'))
 
 # dav1d-fullgrain: default film grain synthesis mode (src/fg_variant.h)
 cdata.set_quoted('DAV1D_GRAIN_MODE_DEFAULT', get_option('grain_mode_default'))
+cdata.set10('DAV1D_GRAIN_FORCE_DEFAULT', get_option('grain_force'))
 
 #
 # OS/Compiler checks and defines
