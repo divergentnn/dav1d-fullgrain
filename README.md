@@ -227,6 +227,19 @@ to any writable path before starting mpv):
 - `b` is a blind toggle between standard and full, shown only as A/B;
 - `B` reveals which was which.
 
+### In the browser (WebAssembly)
+
+`wasm/build.sh` builds the fork for WebAssembly, with SIMD and threads,
+together with a small player kit: a decode Worker and a `<canvas>` that acts
+like a `<video>` and draws with WebGL2.
+
+- **Speed:** on a desktop CPU it decodes 1080p 10-bit AV1 with full-frame
+  grain at about 90 fps.
+- **Exactness:** output is bit-identical to native.
+- **Requirements:** the page must be cross-origin isolated (COOP/COEP).
+
+See [wasm/README.md](wasm/README.md).
+
 ## Options
 
 | | |

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>dav1d-fullgrain WebAssembly player</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font: 14px system-ui, sans-serif; background: #111; color: #eee; }
+  header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; background: #1b1d1f; }
+  button, select, input { font: inherit; }
+  #stage { display: grid; place-items: center; padding: 8px; }
+  #stage canvas, #stage video { max-width: 100%; max-height: calc(100vh - 120px); }
+  #info { font-variant-numeric: tabular-nums; color: #aaa; }
+</style>
+</head>
+<body>
+<header>
+  <input type="file" id="file" accept="video/mp4">
+  <select id="mode"><option>full</option><option>standard</option><option>dual</option><option>multi</option></select>
+  <button id="play" disabled>Play</button>
+  <button id="prev" disabled>‹ frame</button>
+  <button id="next" disabled>frame ›</button>
+  <span id="info"></span>
+</header>
+<div id="stage"></div>
+<script type="module">
+import { wasmSupport, createWasmClip } from './wasm-clip.mjs';
+const $ = id => document.getElementById(id);
+let clip = null, fps = 24000 / 1001;
+const why = wasmSupport();
+$('info').textContent = why.length ? 'unavailable: ' + why.join(', ') : 'ready';
+
+async function load(buf, mode) {
+  if (clip) { clip.dispose(); clip.remove(); }
+  const t = performance.now();
+  clip = await createWasmClip(buf, { fps, mode });
+  if (!clip) { $('info').textContent = 'not an AV1 clip'; return null; }
+  $('stage').append(clip);
+  for (const b of ['play', 'prev', 'next']) $(b).disabled = false;
+  $('info').textContent = `${clip.videoWidth}x${clip.videoHeight}, ${clip.frameCount} frames, grain ${clip.hasGrain ? 'yes' : 'no'}, opened in ${(performance.now() - t).toFixed(0)} ms`;
+  return clip;
+}
+// for scripted tests (Playwright): await window.dg.load(url, mode)
+window.dg = {
+  load: async (url, mode) => load(await (await fetch(url)).arrayBuffer(), mode || 'full'),
+  get clip() { return clip; },
+  support: why,
+};
+$('file').onchange = async e => { const f = e.target.files[0]; if (f) await load(await f.arrayBuffer(), $('mode').value); };
+$('mode').onchange = () => clip && clip.setGrainMode($('mode').value);
+$('play').onclick = () => { if (!clip) return; if (clip.paused) { clip.play(); $('play').textContent = 'Pause'; } else { clip.pause(); $('play').textContent = 'Play'; } };
+const step = d => { if (!clip) return; clip.pause(); $('play').textContent = 'Play';
+  const n = Math.round(clip.currentTime * fps - 0.5) + d; clip.currentTime = (Math.max(0, n) + 0.5) / fps; };
+$('prev').onclick = () => step(-1);
+$('next').onclick = () => step(1);
+setInterval(() => { if (clip && !clip.paused) { const s = clip.stats;
+  $('info').textContent = `frame ${Math.round(clip.currentTime * fps - 0.5)} · shown ${s.shown} · dropped ${s.dropped} · decoded ${s.decoded}`; } }, 250);
+</script>
+</body>
+</html>
