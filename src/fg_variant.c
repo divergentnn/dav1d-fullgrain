@@ -52,9 +52,9 @@ static int set_mode(Dav1dFGVariant *const fgv, const int mode) {
                                         fgv->tmpl_set_bytes * fgv->ntmpl, 64);
         if (!fgv->tmpl) return -1;
     }
-    if (mode >= DAV1D_FGMODE_MULTI && fgv->avx2 && !fgv->lut32) {
+    if (mode >= DAV1D_FGMODE_MULTI && fgv->simd && ARCH_X86_64 && !fgv->lut32) {
         fgv->lut32 = dav1d_alloc_aligned(ALLOC_COMMON_CTX, 3 * 4096 * sizeof(int32_t), 64);
-        if (!fgv->lut32) fgv->avx2 = 0;
+        if (!fgv->lut32) fgv->simd = 0;
     }
     fgv->mode = mode;
     return 0;
@@ -70,7 +70,14 @@ COLD void dav1d_fgv_init(Dav1dFGVariant *const fgv) {
     const size_t set = 3 * (GRAIN_HEIGHT + 1) * GRAIN_WIDTH * sizeof(int16_t);
     fgv->tmpl_set_bytes = (set + 63) & ~(size_t) 63;
 #if ARCH_X86_64
-    fgv->avx2 = !!(dav1d_get_cpu_flags() & DAV1D_X86_CPU_FLAG_AVX2);
+    fgv->simd = !!(dav1d_get_cpu_flags() & DAV1D_X86_CPU_FLAG_AVX2);
+#elif ARCH_AARCH64
+    fgv->simd = !!(dav1d_get_cpu_flags() & DAV1D_ARM_CPU_FLAG_NEON);
+#endif
+    if (!env_int("DAV1D_GRAIN_SIMD", 1, 0, 1)) fgv->simd = 0;
+#ifdef DAV1D_GRAIN_MODE_DEFAULT
+    if (parse_mode(DAV1D_GRAIN_MODE_DEFAULT) >= 0)
+        set_mode(fgv, parse_mode(DAV1D_GRAIN_MODE_DEFAULT));
 #endif
     const char *m = getenv("DAV1D_GRAIN_MODE");
     if (m && parse_mode(m) >= 0) set_mode(fgv, parse_mode(m));
@@ -82,8 +89,8 @@ COLD void dav1d_fgv_init(Dav1dFGVariant *const fgv) {
         dav1d_fgv_poll(fgv);
     }
     if (fgv->stats)
-        fprintf(stderr, "dav1d-grain: mode=%s templates=%d warmup=%d bands=%d avx2=%d%s%s\n",
-                mode_names[fgv->mode], fgv->ntmpl, fgv->warmup, fgv->bands, fgv->avx2,
+        fprintf(stderr, "dav1d-grain: mode=%s templates=%d warmup=%d bands=%d simd=%d%s%s\n",
+                mode_names[fgv->mode], fgv->ntmpl, fgv->warmup, fgv->bands, fgv->simd,
                 fgv->mode_file ? " mode_file=" : "", fgv->mode_file ? fgv->mode_file : "");
 }
 

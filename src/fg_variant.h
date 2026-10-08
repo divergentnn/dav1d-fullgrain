@@ -22,6 +22,8 @@
  *
  * Runtime switches (read once per dav1d_open):
  *   DAV1D_GRAIN_MODE=standard|standard_c|multi|dual|full
+ *                             (default: meson option grain_mode_default)
+ *   DAV1D_GRAIN_SIMD=0        (use the C paths of the variants; for testing)
  *   DAV1D_GRAIN_TEMPLATES=K   (multi/dual; default 16, 2..64)
  *   DAV1D_GRAIN_WARMUP=P      (full; default 16 rows, even, 4..64)
  *   DAV1D_GRAIN_BANDS=G       (full; 32-row bands per warm-up, default 4, 1..8)
@@ -56,9 +58,9 @@ typedef struct Dav1dFGVariant {
     int warmup;
     int bands;             /* full mode: 32-row bands per warm-up */
     int stats;
-    int avx2;              /* use the AVX2 kernels (x86-64, from dav1d's cpu flags) */
+    int simd;              /* SIMD kernels: AVX2 on x86-64, NEON on aarch64 */
     void *tmpl;            /* ntmpl template sets, each [3][GRAIN_HEIGHT+1][GRAIN_WIDTH] */
-    int32_t *lut32;        /* [3][4096] scaling << (15 - scaling_shift), AVX2 path */
+    int32_t *lut32;        /* [3][4096] scaling << (15 - scaling_shift), AVX2 path only */
     int32_t gtab[2048];    /* Gaussian table >> (gaussian shift), full mode */
     char *mode_file;       /* DAV1D_GRAIN_MODE_FILE */
     uint64_t last_poll;

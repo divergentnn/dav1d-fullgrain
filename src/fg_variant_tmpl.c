@@ -30,6 +30,9 @@
 #define FGV_AVX2 __attribute__((target("avx2")))
 #define FGV_TSC() __rdtsc()
 #else
+#if ARCH_AARCH64
+#include <arm_neon.h>
+#endif
 #define FGV_TSC() 0
 #endif
 
@@ -89,7 +92,7 @@ void bitfn(dav1d_fgv_prep_luts)(Dav1dFGVariant *const fgv, const Dav1dPicture *c
     const int bitdepth_max = (1 << in->p.bpc) - 1;
 #endif
     const int bitdepth_min_8 = bitdepth_from_max(bitdepth_max) - 8;
-    if (fgv->avx2 && fgv->lut32) {
+    if (fgv->simd && fgv->lut32) {
         const int n = BITDEPTH_MAX + 1, sh = 15 - data->scaling_shift;
         for (int pl = 0; pl < 3; pl++)
             for (int i = 0; i < n; i++)
@@ -226,10 +229,99 @@ static inline FGV_AVX2 int apply_uv_avx2(pixel *const dst, const pixel *const sr
 }
 #endif
 
+#if ARCH_AARCH64
+/* NEON: vqrdmulh(sc << (15 - shift), g) == round2(sc * g, shift), exactly
+ * like pmulhrsw on x86. NEON has no gather, so the scaling LUT is read with
+ * scalar loads. */
+static inline int apply_y_neon(pixel *const dst, const pixel *const src,
+                               const int16_t *const g, const int w,
+                               const FGApply *const A)
+{
+    const int16x8_t vmn = vdupq_n_s16(A->min_value), vmx = vdupq_n_s16(A->max_value);
+    const int16x8_t sh = vdupq_n_s16(15 - A->shift);
+    const uint8_t *const sc = A->scaling;
+    int x = 0;
+    for (; x + 8 <= w; x += 8) {
+        uint8_t l8[8];
+        for (int i = 0; i < 8; i++) l8[i] = sc[src[x + i]];
+#if BITDEPTH == 8
+        const int16x8_t s = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(src + x)));
+#else
+        const int16x8_t s = vreinterpretq_s16_u16(vld1q_u16(src + x));
+#endif
+        const int16x8_t l = vshlq_s16(vreinterpretq_s16_u16(vmovl_u8(vld1_u8(l8))), sh);
+        const int16x8_t n = vqrdmulhq_s16(l, vld1q_s16(g + x));
+        const int16x8_t d = vminq_s16(vmaxq_s16(vqaddq_s16(s, n), vmn), vmx);
+#if BITDEPTH == 8
+        vst1_u8(dst + x, vqmovun_s16(d));
+#else
+        vst1q_u16(dst + x, vreinterpretq_u16_s16(d));
+#endif
+    }
+    return x;
+}
+
+static inline int apply_uv_neon(pixel *const dst, const pixel *const src,
+                                const pixel *const luma, const int16_t *const g,
+                                const int w, const FGApply *const A)
+{
+    const int16x8_t vmn = vdupq_n_s16(A->min_value), vmx = vdupq_n_s16(A->max_value);
+    const int16x8_t sh = vdupq_n_s16(15 - A->shift);
+    const int32x4_t off = vdupq_n_s32(A->uv_offset), zero = vdupq_n_s32(0);
+    const int32x4_t pmax = vdupq_n_s32(A->pmax);
+    const uint8_t *const sc = A->scaling;
+    int x = 0;
+    for (; x + 8 <= w; x += 8) {
+        uint16x8_t avg;
+        if (A->sx) {
+#if BITDEPTH == 8
+            avg = vrshrq_n_u16(vpaddlq_u8(vld1q_u8(luma + 2 * x)), 1);
+#else
+            avg = vrshrq_n_u16(vpaddq_u16(vld1q_u16(luma + 2 * x), vld1q_u16(luma + 2 * x + 8)), 1);
+#endif
+        } else {
+#if BITDEPTH == 8
+            avg = vmovl_u8(vld1_u8(luma + x));
+#else
+            avg = vld1q_u16(luma + x);
+#endif
+        }
+#if BITDEPTH == 8
+        const int16x8_t s = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(src + x)));
+#else
+        const int16x8_t s = vreinterpretq_s16_u16(vld1q_u16(src + x));
+#endif
+        uint16_t val[8];
+        if (!A->csfl) {
+            int32x4_t c0 = vmulq_n_s32(vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(avg))), A->uv_luma_mult);
+            int32x4_t c1 = vmulq_n_s32(vreinterpretq_s32_u32(vmovl_high_u16(avg)), A->uv_luma_mult);
+            c0 = vmlaq_n_s32(c0, vmovl_s16(vget_low_s16(s)), A->uv_mult);
+            c1 = vmlaq_n_s32(c1, vmovl_high_s16(s), A->uv_mult);
+            c0 = vminq_s32(vmaxq_s32(vaddq_s32(vshrq_n_s32(c0, 6), off), zero), pmax);
+            c1 = vminq_s32(vmaxq_s32(vaddq_s32(vshrq_n_s32(c1, 6), off), zero), pmax);
+            vst1q_u16(val, vcombine_u16(vqmovun_s32(c0), vqmovun_s32(c1)));
+        } else {
+            vst1q_u16(val, avg);
+        }
+        uint8_t l8[8];
+        for (int i = 0; i < 8; i++) l8[i] = sc[val[i]];
+        const int16x8_t l = vshlq_s16(vreinterpretq_s16_u16(vmovl_u8(vld1_u8(l8))), sh);
+        const int16x8_t n = vqrdmulhq_s16(l, vld1q_s16(g + x));
+        const int16x8_t d = vminq_s16(vmaxq_s16(vqaddq_s16(s, n), vmn), vmx);
+#if BITDEPTH == 8
+        vst1_u8(dst + x, vqmovun_s16(d));
+#else
+        vst1q_u16(dst + x, vreinterpretq_u16_s16(d));
+#endif
+    }
+    return x;
+}
+#endif
+
 static ALWAYS_INLINE void apply_y_rows(pixel *const dst_row, const pixel *const src_row,
                                        const ptrdiff_t stride, const int16_t *const g0,
                                        const ptrdiff_t gstride, const int w, const int h,
-                                       const FGApply *const A, const int avx2)
+                                       const FGApply *const A, const int simd)
 {
     for (int y = 0; y < h; y++) {
         const pixel *const src = src_row + y * PXSTRIDE(stride);
@@ -237,7 +329,9 @@ static ALWAYS_INLINE void apply_y_rows(pixel *const dst_row, const pixel *const 
         const int16_t *const g = g0 + y * gstride;
         int x = 0;
 #if ARCH_X86_64
-        if (avx2) x = apply_y_avx2(dst, src, g, w, A);
+        if (simd) x = apply_y_avx2(dst, src, g, w, A);
+#elif ARCH_AARCH64
+        if (simd) x = apply_y_neon(dst, src, g, w, A);
 #endif
         for (; x < w; x++) {
             const int noise = fgv_round2(A->scaling[src[x]] * g[x], A->shift);
@@ -252,7 +346,7 @@ static ALWAYS_INLINE void apply_uv_rows(pixel *const dst_row, const pixel *const
                                         const ptrdiff_t luma_stride, const int sy,
                                         const int16_t *const g0, const ptrdiff_t gstride,
                                         const int w, const int h,
-                                        const FGApply *const A, const int avx2
+                                        const FGApply *const A, const int simd
                                         HIGHBD_DECL_SUFFIX)
 {
     const int sx = A->sx;
@@ -263,7 +357,9 @@ static ALWAYS_INLINE void apply_uv_rows(pixel *const dst_row, const pixel *const
         const int16_t *const g = g0 + y * gstride;
         int x = 0;
 #if ARCH_X86_64
-        if (avx2) x = apply_uv_avx2(dst, src, luma, g, w, A);
+        if (simd) x = apply_uv_avx2(dst, src, luma, g, w, A);
+#elif ARCH_AARCH64
+        if (simd) x = apply_uv_neon(dst, src, luma, g, w, A);
 #endif
         for (; x < w; x++) {
             int avg = luma[x << sx];
@@ -287,7 +383,7 @@ static void setup_apply(FGApply *const A, const Dav1dFGVariant *const fgv,
 {
     const int bitdepth_min_8 = bitdepth_from_max(bitdepth_max) - 8;
     A->scaling = scaling;
-    A->lut32 = fgv->avx2 && fgv->lut32 ? fgv->lut32 + lut_pl * 4096 : NULL;
+    A->lut32 = fgv->simd && fgv->lut32 ? fgv->lut32 + lut_pl * 4096 : NULL;
     A->shift = data->scaling_shift;
     if (data->clip_to_restricted_range) {
         A->min_value = 16 << bitdepth_min_8;
@@ -477,18 +573,32 @@ static inline FGV_AVX2 int mix_row_avx2(int16_t *const a, const int16_t *const b
     }
     return x;
 }
+#elif ARCH_AARCH64
+static inline int mix_row_neon(int16_t *const a, const int16_t *const b,
+                               const int w, const int gmin, const int gmax)
+{
+    const int16x8_t mn = vdupq_n_s16(gmin), mx = vdupq_n_s16(gmax);
+    int x = 0;
+    for (; x + 8 <= w; x += 8) {
+        const int16x8_t sum = vaddq_s16(vld1q_s16(a + x), vld1q_s16(b + x));
+        vst1q_s16(a + x, vminq_s16(vmaxq_s16(vqrdmulhq_n_s16(sum, 181 << 7), mn), mx));
+    }
+    return x;
+}
 #endif
 
 static ALWAYS_INLINE void mix_layers(int16_t *const ga, const int16_t *const gb,
                                      const ptrdiff_t gstride, const int w, const int h,
-                                     const int gmin, const int gmax, const int avx2)
+                                     const int gmin, const int gmax, const int simd)
 {
     for (int y = 0; y < h; y++) {
         int16_t *const a = ga + y * gstride;
         const int16_t *const b = gb + y * gstride;
         int x = 0;
 #if ARCH_X86_64
-        if (avx2) x = mix_row_avx2(a, b, w, gmin, gmax);
+        if (simd) x = mix_row_avx2(a, b, w, gmin, gmax);
+#elif ARCH_AARCH64
+        if (simd) x = mix_row_neon(a, b, w, gmin, gmax);
 #endif
         for (; x < w; x++)
             a[x] = iclip(((a[x] + b[x]) * 181 + 128) >> 8, gmin, gmax);
@@ -504,7 +614,7 @@ fgv_layers_plane(Dav1dFGVariant *const fgv,
                  const FGLayer *const LA, const FGLayer *const LB,
                  const int is_uv, const pixel *const luma_row,
                  const ptrdiff_t luma_stride, const int sy,
-                 const FGApply *const A, const int avx2 HIGHBD_DECL_SUFFIX)
+                 const FGApply *const A, const int simd HIGHBD_DECL_SUFFIX)
 {
     const ptrdiff_t gs = (pw + 31) & ~31;
     int slot;
@@ -515,13 +625,13 @@ fgv_layers_plane(Dav1dFGVariant *const fgv,
     layer_fill(ga, gs, Y0, 0, bh, pw, LA);
     if (LB) {
         layer_fill(gb, gs, Y0, 0, bh, pw, LB);
-        mix_layers(ga, gb, gs, pw, bh, LA->gmin, LA->gmax, avx2);
+        mix_layers(ga, gb, gs, pw, bh, LA->gmin, LA->gmax, simd);
     }
     if (!is_uv)
-        apply_y_rows(dst_row, src_row, stride, ga, gs, pw, bh, A, avx2);
+        apply_y_rows(dst_row, src_row, stride, ga, gs, pw, bh, A, simd);
     else
         apply_uv_rows(dst_row, src_row, stride, luma_row, luma_stride, sy,
-                      ga, gs, pw, bh, A, avx2 HIGHBD_TAIL_SUFFIX);
+                      ga, gs, pw, bh, A, simd HIGHBD_TAIL_SUFFIX);
     dav1d_fgv_scratch_put(fgv, slot, ga);
 }
 
@@ -566,13 +676,13 @@ static inline FGV_AVX2 int noise_row_avx2(int16_t *const dst, const uint32_t rk,
 
 static ALWAYS_INLINE void noise_row(int16_t *const dst, const uint32_t key, const int y,
                                     const int x0, const int n,
-                                    const int32_t *const gtab, const int avx2)
+                                    const int32_t *const gtab, const int simd)
 {
     const uint32_t rk = dav1d_fgv_hash(key ^ dav1d_fgv_hash((uint32_t) y * 0x9E3779B9u +
                                                             0x7f4a7c15u));
     int i = 0;
 #if ARCH_X86_64
-    if (avx2 && !(x0 & 1)) i = noise_row_avx2(dst, rk, x0, n, gtab);
+    if (simd && !(x0 & 1)) i = noise_row_avx2(dst, rk, x0, n, gtab);
 #endif
     for (; i < n; i++) {
         const int x = x0 + i;
@@ -581,52 +691,6 @@ static ALWAYS_INLINE void noise_row(int16_t *const dst, const uint32_t key, cons
         dst[i] = (int16_t) gtab[v];
     }
 }
-
-#if ARCH_X86_64
-/* previous-row taps, 16 columns per iteration, two taps per pmaddwd */
-static inline FGV_AVX2 int vtaps_avx2(int32_t *const acc, const int16_t *const row,
-                                      const int c0, const int cend,
-                                      const ptrdiff_t *const toff,
-                                      const int32_t *const cabs, const int ntap)
-{
-    __m256i cab[13];
-    for (int t = 0; t < ntap; t += 2) cab[t >> 1] = _mm256_set1_epi32(cabs[t >> 1]);
-    int c = c0;
-    for (; c + 16 <= cend; c += 16) {
-        __m256i lo = _mm256_setzero_si256(), hi = _mm256_setzero_si256();
-        for (int t = 0; t < ntap; t += 2) {
-            const __m256i va = _mm256_loadu_si256((const __m256i *) (row + c + toff[t]));
-            const __m256i vb = _mm256_loadu_si256((const __m256i *) (row + c + toff[t + 1]));
-            lo = _mm256_add_epi32(lo, _mm256_madd_epi16(_mm256_unpacklo_epi16(va, vb), cab[t >> 1]));
-            hi = _mm256_add_epi32(hi, _mm256_madd_epi16(_mm256_unpackhi_epi16(va, vb), cab[t >> 1]));
-        }
-        _mm256_storeu_si256((__m256i *) (acc + c), _mm256_permute2x128_si256(lo, hi, 0x20));
-        _mm256_storeu_si256((__m256i *) (acc + c + 8), _mm256_permute2x128_si256(lo, hi, 0x31));
-    }
-    return c;
-}
-
-/* chroma-from-luma term for 4:2:x, 8 columns per iteration */
-static inline FGV_AVX2 int lumaterm_avx2(int32_t *const acc, const int16_t *const lr,
-                                         const ptrdiff_t lbw, const int c0, const int cend,
-                                         const int subx, const int suby, const int luma_coeff)
-{
-    const __m256i ones = _mm256_set1_epi16(1);
-    const __m256i rnd = _mm256_set1_epi32((1 << (subx + suby)) >> 1);
-    const __m256i lcv = _mm256_set1_epi32(luma_coeff);
-    int c = c0;
-    for (; c + 8 <= cend; c += 8) {
-        __m256i s = _mm256_madd_epi16(_mm256_loadu_si256((const __m256i *) (lr + 2 * c)), ones);
-        if (suby)
-            s = _mm256_add_epi32(s, _mm256_madd_epi16(
-                    _mm256_loadu_si256((const __m256i *) (lr + lbw + 2 * c)), ones));
-        s = _mm256_srai_epi32(_mm256_add_epi32(s, rnd), subx + suby);
-        const __m256i a = _mm256_loadu_si256((const __m256i *) (acc + c));
-        _mm256_storeu_si256((__m256i *) (acc + c), _mm256_add_epi32(a, _mm256_mullo_epi32(s, lcv)));
-    }
-    return c;
-}
-#endif
 
 #if ARCH_X86_64
 /* previous-row taps for one 16-column chunk, two taps per pmaddwd */
@@ -685,7 +749,7 @@ static ALWAYS_INLINE void ar_band(int16_t *const buf, const int bw, const int ro
                                   const int16_t *const lbuf, const int lbw,
                                   const int subx, const int suby, const int luma_coeff,
                                   int32_t *const acc_unused, Dav1dFGVariant *const fgv,
-                                  const int avx2)
+                                  const int simd)
 {
     uint64_t _tp = fgv->stats > 1 ? FGV_TSC() : 0;
     int ntap = 0;
@@ -734,7 +798,7 @@ static ALWAYS_INLINE void ar_band(int16_t *const buf, const int bw, const int ro
                 /* previous-row taps (+ chroma-from-luma) for this chunk */
                 const int16_t *const p = rowp[j] + c0[j];
 #if ARCH_X86_64
-                if (avx2 && n[j] == 16) {
+                if (simd && n[j] == 16) {
                     vtaps16_avx2(acc[j], p, toff, cabs, ntap);
                 } else
 #endif
@@ -752,7 +816,7 @@ static ALWAYS_INLINE void ar_band(int16_t *const buf, const int bw, const int ro
                 if (has_luma) {
                     const int16_t *const lr = lbuf + ((r0 + j) << suby) * lbw + (c0[j] << subx);
 #if ARCH_X86_64
-                    if (avx2 && subx && n[j] == 16) {
+                    if (simd && subx && n[j] == 16) {
                         lumaterm16_avx2(acc[j], lr, lbw, subx, suby, luma_coeff);
                     } else
 #endif
@@ -794,7 +858,7 @@ static ALWAYS_INLINE void ar_band(int16_t *const buf, const int bw, const int ro
 static ALWAYS_INLINE void fgv_full_row(Dav1dFGVariant *const fgv, Dav1dPicture *const out,
                                        const Dav1dPicture *const in,
                                        const uint8_t scaling[3][SCALING_SIZE],
-                                       const int row, const int avx2)
+                                       const int row, const int simd)
 {
     const Dav1dFilmGrainData *const data = &out->frame_hdr->film_grain.data;
 #if BITDEPTH != 8
@@ -841,7 +905,7 @@ static ALWAYS_INLINE void fgv_full_row(Dav1dFGVariant *const fgv, Dav1dPicture *
     int32_t *acc = NULL;
     SkewDims ld, cd;
 
-    if (avx2) {
+    if (simd) {
         skew_dims(&ld, lbw, lrows);
         skew_dims(&cd, cbw, crows);
         const size_t nsk = imax((int) ld.skew_elems, (int) cd.skew_elems);
@@ -872,9 +936,15 @@ static ALWAYS_INLINE void fgv_full_row(Dav1dFGVariant *const fgv, Dav1dPicture *
 
     if (data->num_y_points) {
 #if ARCH_X86_64
-        if (avx2) {
+        if (simd) {
             ar_band_skew_avx2(lbuf, skb, &ld, ykey, Y0 - P, -FGV_XL, fgv->gtab,
-                              data->ar_coeffs_y, lag, data->ar_coeff_shift, gmin, gmax,
+                              data->ar_coeffs_y, lag, (int) data->ar_coeff_shift, gmin, gmax,
+                              NULL, 0);
+        } else
+#elif ARCH_AARCH64
+        if (simd) {
+            ar_band_skew_neon(lbuf, skb, &ld, ykey, Y0 - P, -FGV_XL, fgv->gtab,
+                              data->ar_coeffs_y, lag, (int) data->ar_coeff_shift, gmin, gmax,
                               NULL, 0);
         } else
 #endif
@@ -882,14 +952,14 @@ static ALWAYS_INLINE void fgv_full_row(Dav1dFGVariant *const fgv, Dav1dPicture *
             for (int r = 0; r < lrows; r++)
                 noise_row(lbuf + r * lbw, ykey, Y0 - P + r, -FGV_XL, lbw, fgv->gtab, 0);
             PH(0);
-            ar_band(lbuf, lbw, lrows, data->ar_coeffs_y, lag, data->ar_coeff_shift,
+            ar_band(lbuf, lbw, lrows, data->ar_coeffs_y, lag, (int) data->ar_coeff_shift,
                     gmin, gmax, NULL, 0, 0, 0, 0, acc, fgv, 0);
         }
         PH(1);
         setup_apply(&A, fgv, data, scaling[0], 0, 0, 0, is_id, 0 HIGHBD_TAIL_SUFFIX);
         const ptrdiff_t stride = out->stride[0];
         apply_y_rows(((pixel *) out->data[0]) + Y0 * PXSTRIDE(stride), luma_src, stride,
-                     lf + P * lfs + FGV_XL, lfs, W, bh, &A, avx2);
+                     lf + P * lfs + FGV_XL, lfs, W, bh, &A, simd);
         PH(3);
     }
 
@@ -911,13 +981,23 @@ static ALWAYS_INLINE void fgv_full_row(Dav1dFGVariant *const fgv, Dav1dPicture *
                                                 0x10001u + 0x2545F491u);
             const int lc = data->num_y_points ? data->ar_coeffs_uv[pl][lag * (2 * lag + 1) + lag] : 0;
 #if ARCH_X86_64
-            if (avx2) {
+            if (simd) {
                 if (lc && !ltdone) {
                     lumaterm_rows_avx2(ltb, cd.ostr, lf, lfs, crows, cbw, ss_x, ss_y);
                     ltdone = 1;
                 }
                 ar_band_skew_avx2(cbuf, skb, &cd, key, yc0 - Pc, -(FGV_XL >> ss_x), fgv->gtab,
-                                  data->ar_coeffs_uv[pl], lag, data->ar_coeff_shift, gmin, gmax,
+                                  data->ar_coeffs_uv[pl], lag, (int) data->ar_coeff_shift, gmin, gmax,
+                                  lc ? ltb : NULL, lc);
+            } else
+#elif ARCH_AARCH64
+            if (simd) {
+                if (lc && !ltdone) {
+                    lumaterm_rows_neon(ltb, cd.ostr, lf, lfs, crows, cbw, ss_x, ss_y);
+                    ltdone = 1;
+                }
+                ar_band_skew_neon(cbuf, skb, &cd, key, yc0 - Pc, -(FGV_XL >> ss_x), fgv->gtab,
+                                  data->ar_coeffs_uv[pl], lag, (int) data->ar_coeff_shift, gmin, gmax,
                                   lc ? ltb : NULL, lc);
             } else
 #endif
@@ -926,7 +1006,7 @@ static ALWAYS_INLINE void fgv_full_row(Dav1dFGVariant *const fgv, Dav1dPicture *
                     noise_row(cbuf + r * cbw, key, yc0 - Pc + r, -(FGV_XL >> ss_x), cbw,
                               fgv->gtab, 0);
                 PH(0);
-                ar_band(cbuf, cbw, crows, data->ar_coeffs_uv[pl], lag, data->ar_coeff_shift,
+                ar_band(cbuf, cbw, crows, data->ar_coeffs_uv[pl], lag, (int) data->ar_coeff_shift,
                         gmin, gmax, data->num_y_points ? lbuf : NULL, lbw, ss_x, ss_y, lc,
                         acc, fgv, 0);
             }
@@ -936,7 +1016,7 @@ static ALWAYS_INLINE void fgv_full_row(Dav1dFGVariant *const fgv, Dav1dPicture *
             apply_uv_rows(((pixel *) out->data[1 + pl]) + uv_off,
                           ((const pixel *) in->data[1 + pl]) + uv_off, stride,
                           luma_src, in->stride[0], ss_y,
-                          cf + Pc * cfs + (FGV_XL >> ss_x), cfs, cpw, bhc, &A, avx2
+                          cf + Pc * cfs + (FGV_XL >> ss_x), cfs, cpw, bhc, &A, simd
                           HIGHBD_TAIL_SUFFIX);
             PH(3);
         }
@@ -950,10 +1030,10 @@ static ALWAYS_INLINE void fgv_apply_row_impl(Dav1dFGVariant *const fgv,
                                              Dav1dPicture *const out,
                                              const Dav1dPicture *const in,
                                              const uint8_t scaling[3][SCALING_SIZE],
-                                             const int row, const int avx2)
+                                             const int row, const int simd)
 {
     if (fgv->mode == DAV1D_FGMODE_FULL) {
-        fgv_full_row(fgv, out, in, scaling, row, avx2);
+        fgv_full_row(fgv, out, in, scaling, row, simd);
         return;
     }
     const Dav1dFilmGrainData *const data = &out->frame_hdr->film_grain.data;
@@ -977,7 +1057,7 @@ static ALWAYS_INLINE void fgv_apply_row_impl(Dav1dFGVariant *const fgv,
         setup_apply(&A, fgv, data, scaling[0], 0, 0, 0, is_id, 0 HIGHBD_TAIL_SUFFIX);
         fgv_layers_plane(fgv, ((pixel *) out->data[0]) + row * FG_BLOCK_SIZE * PXSTRIDE(out->stride[0]),
                          luma_src, out->stride[0], out->p.w, bh, row * FG_BLOCK_SIZE,
-                         &LA, dual ? &LB : NULL, 0, NULL, 0, 0, &A, avx2
+                         &LA, dual ? &LB : NULL, 0, NULL, 0, 0, &A, simd
                          HIGHBD_TAIL_SUFFIX);
     }
 
@@ -1008,7 +1088,7 @@ static ALWAYS_INLINE void fgv_apply_row_impl(Dav1dFGVariant *const fgv,
                          ((const pixel *) in->data[1 + pl]) + uv_off,
                          in->stride[1], cpw, bh, (row * FG_BLOCK_SIZE) >> ss_y,
                          &LA, dual ? &LB : NULL, 1, luma_src, in->stride[0], ss_y,
-                         &A, avx2 HIGHBD_TAIL_SUFFIX);
+                         &A, simd HIGHBD_TAIL_SUFFIX);
     }
 }
 
@@ -1019,6 +1099,16 @@ static NOINLINE void fgv_apply_row_c(Dav1dFGVariant *const fgv, Dav1dPicture *co
 {
     fgv_apply_row_impl(fgv, out, in, scaling, row, 0);
 }
+
+#if ARCH_AARCH64
+static NOINLINE void fgv_apply_row_neon(Dav1dFGVariant *const fgv, Dav1dPicture *const out,
+                                        const Dav1dPicture *const in,
+                                        const uint8_t scaling[3][SCALING_SIZE],
+                                        const int row)
+{
+    fgv_apply_row_impl(fgv, out, in, scaling, row, 1);
+}
+#endif
 
 #if ARCH_X86_64
 static NOINLINE FGV_AVX2 void fgv_apply_row_avx2(Dav1dFGVariant *const fgv,
@@ -1036,8 +1126,13 @@ void bitfn(dav1d_fgv_apply_row)(Dav1dFGVariant *const fgv, Dav1dPicture *const o
                                 const uint8_t scaling[3][SCALING_SIZE], const int row)
 {
 #if ARCH_X86_64
-    if (fgv->avx2 && fgv->lut32) {
+    if (fgv->simd && fgv->lut32) {
         fgv_apply_row_avx2(fgv, out, in, scaling, row);
+        return;
+    }
+#elif ARCH_AARCH64
+    if (fgv->simd) {
+        fgv_apply_row_neon(fgv, out, in, scaling, row);
         return;
     }
 #endif

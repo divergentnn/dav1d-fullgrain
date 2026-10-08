@@ -86,6 +86,9 @@ cdata.set10('TRIM_DSP_FUNCTIONS', get_option('trim_dsp') == 'true' or
 # Logging option
 cdata.set10('CONFIG_LOG', get_option('logging'))
 
+# dav1d-fullgrain: default film grain synthesis mode (src/fg_variant.h)
+cdata.set_quoted('DAV1D_GRAIN_MODE_DEFAULT', get_option('grain_mode_default'))
+
 #
 # OS/Compiler checks and defines
 #

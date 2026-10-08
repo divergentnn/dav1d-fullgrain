@@ -68,3 +68,9 @@ option('trim_dsp',
     choices: ['true', 'false', 'if-release'],
     value: 'if-release',
     description: 'Eliminate redundant DSP functions where possible')
+
+option('grain_mode_default',
+    type: 'combo',
+    choices: ['full', 'standard', 'standard_c', 'dual', 'multi'],
+    value: 'full',
+    description: 'dav1d-fullgrain: default film grain synthesis (DAV1D_GRAIN_MODE overrides it at runtime; standard = conformant AV1 grain)')
