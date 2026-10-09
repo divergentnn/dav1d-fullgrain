@@ -4,8 +4,10 @@ This builds the fork, full-frame film grain included, as a WebAssembly module
 with SIMD and threads. It comes with a small player kit: a decode Worker, and
 a `<canvas>` that behaves like a `<video>` element and draws with WebGL2.
 
-flipcomp, my comparison viewer, uses the kit to show AV1 clips that carry
-film grain with either standard or full-frame grain.
+[flipcomp](https://github.com/divergentnn/flipcomp) (private), my comparison
+viewer, uses the kit to show AV1 clips that carry film grain with either
+standard or full-frame grain. It ships this build at commit `b891ed06`: dav1d
+1.5.4 with full-frame grain, emscripten 6.0.12.
 
 ## Build
 

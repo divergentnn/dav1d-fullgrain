@@ -237,6 +237,9 @@ like a `<video>` and draws with WebGL2.
   grain at about 90 fps.
 - **Exactness:** output is bit-identical to native.
 - **Requirements:** the page must be cross-origin isolated (COOP/COEP).
+- **Used by:** [flipcomp](https://github.com/divergentnn/flipcomp) (private),
+  my comparison viewer. It ships the WebAssembly build of commit `b891ed06`:
+  dav1d 1.5.4 with full-frame grain, emscripten 6.0.12.
 
 See [wasm/README.md](wasm/README.md).
 
