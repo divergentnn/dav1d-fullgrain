@@ -33,7 +33,7 @@ two; keep the tab in front. The results go back to the machine that served this 
 <h2>Decoding the grain-free clips</h2><table id="dec"><tr><th>clip</th><th>decoder</th><th>output format</th><th>decode + copy</th><th>copyTo</th><th>grain-free = dav1d</th></tr></table>
 <h2>Grain (full-frame and standard) on the decoded pictures</h2><table id="grain"><tr><th>clip</th><th>engine</th><th>mode</th><th>= dav1d</th><th>ms / picture</th></tr></table>
 <h2>Drawing (YUV to RGB, one picture, 20 times)</h2><table id="draw"><tr><th>clip</th><th>engine</th><th>ms / draw</th></tr></table>
-<h2>Playback (the player, 3 s each)</h2><table id="play"><tr><th>clip</th><th>engine</th><th>shown</th><th>dropped</th><th>HDR output</th></tr></table>
+<h2>Playback (the player: 1 s warm-up, then 3 s measured)</h2><table id="play"><tr><th>clip</th><th>engine</th><th>shown</th><th>dropped</th><th>HDR output</th></tr></table>
 <div id="stage"></div>
 <pre id="log"></pre>
 <script type="module">
@@ -241,15 +241,23 @@ async function decodeAll(d, accel, onFrame, limit = Infinity) {
     for (const engine of engines) {
       status(`playing ${v.name} with ${engine}…`);
       try {
-        const c = await createGrainClip(buf, params, { fps: 24000 / 1001, mode: 'full', engine });
+        const c = await createGrainClip(buf, params, { fps: 24000 / 1001, mode: 'full', engine, trace: true });
         $('stage').replaceChildren(c);
         await sleep(300);
+        // 1 s to fill the decoder pipeline, then 3 s measured (the clip is 4 s long)
+        await c.play(); await sleep(1000);
         const s0 = { ...c.stats }, t0 = performance.now();
-        await c.play(); await sleep(3000); c.pause();
+        await sleep(2900); c.pause();
         const dt = (performance.now() - t0) / 1000, st = c.stats;
         const shown = st.shown - s0.shown, dropped = st.dropped - s0.dropped;
-        R.play.push({ clip: v.name, engine, fps: shown / dt, dropped, hdrOutput: c.hdrOutput, format: c.decoder.format });
-        row('play', [name, engine, `${(shown / dt).toFixed(1)} fps`, String(dropped), c.hdr ? String(c.hdrOutput) : 'SDR clip'],
+        const pres = c.trace.filter(x => x[1] === 'present' && x[0] >= t0).map(x => x[0]);
+        const gaps = pres.slice(1).map((t, i) => t - pres[i]), maxGap = gaps.length ? Math.max(...gaps) : 0;
+        const feed = {}, lat = [];
+        for (const [t, e, n] of c.trace) { if (e === 'feed') feed[n] = t; if (e === 'ready' && feed[n] !== undefined && t >= t0) lat.push(t - feed[n]); }
+        R.play.push({ clip: v.name, engine, fps: shown / dt, dropped, maxGapMs: maxGap, decodeLatencyMs: med(lat),
+                      hdrOutput: c.hdrOutput, format: c.decoder.format, warm: true });
+        row('play', [name, engine, `${(shown / dt).toFixed(1)} fps (longest gap ${maxGap.toFixed(0)} ms, decode→ready ${med(lat).toFixed(0)} ms)`,
+                     String(dropped), c.hdr ? String(c.hdrOutput) : 'SDR clip'],
             [null, null, 'num', dropped > 3 ? 'warn' : 'ok']);
         c.dispose();
       } catch (e) {
