@@ -45,6 +45,11 @@ jobs:
       - name: Test (standard == upstream, SIMD == C, cross-platform hashes)
         run: sh tests/fullgrain/run.sh build/tools/dav1d upstream/build/tools/dav1d
 
+      - name: av1grain strip (grain-free stream + params == original)
+        run: |
+          sh tests/fullgrain/strip.sh build/tools/av1grain
+          python3 tools/av1grain_mp4.py --help >/dev/null
+
       - name: Timing
         run: sh tests/fullgrain/timing.sh build/tools/dav1d
 
