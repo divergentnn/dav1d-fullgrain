@@ -2,7 +2,7 @@
 //
 //   PLAYWRIGHT=.../node_modules/playwright-core/index.mjs node wasm/test/gpu-test.mjs VECTOR_DIR \
 //       [--mode full,standard] [--pp high-performance|low-power|swiftshader] [--only a,b] [--frames N] [--reps N]
-//       [--page webcodecs-test.html [--hw prefer-software]]
+//       [--page webcodecs-test.html [--hw prefer-software]] [--engine wasm]   (wasm: fg-grain.wasm from wasm/dist)
 //
 // VECTOR_DIR comes from wasm/test/gpu-vectors.py. WebGPU in headless Chromium on Linux needs Vulkan
 // (--enable-unsafe-webgpu --enable-features=Vulkan --use-angle=vulkan); --pp swiftshader uses the CPU.
@@ -22,7 +22,7 @@ const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i
 const vecDir = resolve(args[0]);
 const pp = opt('pp', 'high-performance');
 const port = +opt('port', 8131);
-const srv = await serve(port, [['/web/', resolve(here, '../web')], ['/test/', here], ['/vec/', vecDir]]);
+const srv = await serve(port, [['/web/', resolve(here, '../web')], ['/web/', resolve(here, '../dist')], ['/test/', here], ['/vec/', vecDir]]);
 const pw = homedir() + '/.cache/ms-playwright';
 const dir = readdirSync(pw).filter(d => /^chromium-\d+$/.test(d)).sort().pop();
 const flags = pp === 'swiftshader'
@@ -38,9 +38,11 @@ if (opt('only')) q.set('only', opt('only'));
 if (opt('dump')) q.set('dump', '1');
 if (args.includes('--repcheck')) q.set('repcheck', '1');
 if (opt('hw')) q.set('hw', opt('hw'));
+if (opt('engine')) q.set('engine', opt('engine'));
 await page.goto(`http://127.0.0.1:${port}/test/${opt('page', 'gpu-test.html')}?${q}`);
 await page.waitForFunction(() => window.results && window.results.done, null, { timeout: +opt('timeout', 1800) * 1000, polling: 500 });
 const r = await page.evaluate(() => window.results);
+if (args.includes('--print')) console.log(JSON.stringify(r, (k, v) => (k === 'dump' ? undefined : v), 1));
 if (opt('dump') && r.dump) {
   (await import('fs')).writeFileSync(opt('dump'), Buffer.from(r.dump.b64, 'base64'));
   console.log(`wrote ${r.dump.name} ${r.dump.mode} frame ${r.dump.frame} to ${opt('dump')}`);

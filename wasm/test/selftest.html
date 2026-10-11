@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AV1 grain self-test</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fafafa; --fg: #161616; --muted: #666; --line: #ddd; --ok: #0a7a2f; --bad: #b3261e; --warn: #8a5a00; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #121212; --fg: #e6e6e6; --muted: #9a9a9a; --line: #333; --ok: #5cd27a; --bad: #ff7b6e; --warn: #e0b04a; } }
+  body { background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, -apple-system, sans-serif; margin: 0 auto; max-width: 980px; padding: 16px; }
+  h1 { font-size: 22px; margin: 0 0 4px; } h2 { font-size: 17px; margin: 22px 0 6px; }
+  p.lead { color: var(--muted); margin: 0 0 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 6px 0; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); } .muted { color: var(--muted); }
+  #status { font-weight: 600; margin: 8px 0; }
+  button { font: inherit; padding: 6px 12px; }
+  pre { white-space: pre-wrap; font-size: 12px; color: var(--muted); max-height: 240px; overflow: auto; }
+  #stage canvas { width: 240px; margin: 4px; border: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<h1>AV1 grain self-test</h1>
+<p class="lead">What this browser does with av1-fullgrain's player: its own AV1 decoder (WebCodecs) on a grain-free
+copy, grain drawn with WebGPU or with WebAssembly. Every picture is checked against dav1d (SHA-256). Takes a minute or
+two; keep the tab in front. The results go back to the machine that served this page.</p>
+<div id="status">starting…</div>
+<button id="copy" hidden>Copy results (JSON)</button>
+<h2>This browser</h2><table id="env"></table>
+<h2>AV1 decoding (WebCodecs isConfigSupported)</h2><table id="sup"></table>
+<h2>Decoding the grain-free clips</h2><table id="dec"><tr><th>clip</th><th>decoder</th><th>output format</th><th>decode + copy</th><th>copyTo</th><th>grain-free = dav1d</th></tr></table>
+<h2>Grain (full-frame and standard) on the decoded pictures</h2><table id="grain"><tr><th>clip</th><th>engine</th><th>mode</th><th>= dav1d</th><th>ms / picture</th></tr></table>
+<h2>Drawing (YUV to RGB, one picture, 20 times)</h2><table id="draw"><tr><th>clip</th><th>engine</th><th>ms / draw</th></tr></table>
+<h2>Playback (the player, 3 s each)</h2><table id="play"><tr><th>clip</th><th>engine</th><th>shown</th><th>dropped</th><th>HDR output</th></tr></table>
+<div id="stage"></div>
+<pre id="log"></pre>
+<script type="module">
+import { createGpuGrain, gpuSupport, gpuAdapter } from '../web/gpu-grain.mjs';
+import { loadParams } from '../web/fg-params.mjs';
+import { demuxAv1 } from '../web/mp4-demux.mjs';
+import { createGrainClip, planarLayout, av1Support } from '../web/grain-clip.mjs';
+import { GpuRenderer, glRenderer } from '../web/yuv-render.mjs';
+
+const q = new URLSearchParams(location.search);
+const vec = (q.get('vec') || '/vec').replace(/\/$/, '');
+const checkFrames = +q.get('frames') || 24;
+const $ = id => document.getElementById(id);
+const R = { env: {}, support: [], decode: [], grain: [], draw: [], play: [], errors: [] };
+window.results = R;
+const status = s => { $('status').textContent = s; };
+const logl = s => { $('log').textContent += s + '\n'; console.log(s); };
+const row = (tab, cells, cls = []) => {
+  const tr = document.createElement('tr');
+  cells.forEach((c, i) => { const td = document.createElement('td'); td.textContent = c; if (cls[i]) td.className = cls[i]; tr.append(td); });
+  $(tab).append(tr);
+};
+const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
+const sha = async b => hex(await crypto.subtle.digest('SHA-256', b));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const med = a => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : NaN; };
+const fmtMs = x => (isFinite(x) ? x.toFixed(2) : '–');
+
+function browserName() {
+  const ua = navigator.userAgent;
+  const m = /(Edg|OPR|Firefox|Chrome|Version)\/([\d.]+)/.exec(ua);
+  const name = !m ? 'unknown' : m[1] === 'Version' ? 'Safari' : m[1] === 'Edg' ? 'Edge' : m[1] === 'OPR' ? 'Opera' : m[1];
+  return `${name} ${m ? m[2] : ''}`.trim();
+}
+
+async function decodeAll(d, accel, onFrame, limit = Infinity) {
+  const frames = [];
+  let err = null;
+  const dec = new VideoDecoder({ output: f => frames.push(f), error: e => { err = e; } });
+  dec.configure({ codec: d.codec, codedWidth: d.width, codedHeight: d.height, hardwareAcceleration: accel, optimizeForLatency: true });
+  const t0 = performance.now();
+  let n = 0, fed = 0;
+  const drain = async () => { while (frames.length) { const f = frames.shift(); try { if (n < limit) await onFrame(f, n); } finally { f.close(); n++; } } };
+  for (const s of d.samples) {
+    if (err) break;
+    dec.decode(new EncodedVideoChunk({ type: s.sync ? 'key' : 'delta', timestamp: 1000 * fed++,
+      data: d.bytes.subarray(s.offset, s.offset + s.size) }));
+    while (dec.decodeQueueSize > 4 && !err) { await drain(); await sleep(0); }
+    await drain();
+  }
+  if (!err) await dec.flush().catch(e => { err = err || e; });
+  await drain();
+  const ms = performance.now() - t0;
+  if (dec.state !== 'closed') dec.close();
+  if (err) throw err;
+  return { ms, frames: n };
+}
+
+(async () => {
+  // ---- environment
+  const env = R.env;
+  env.browser = browserName(); env.ua = navigator.userAgent; env.platform = navigator.platform;
+  env.cores = navigator.hardwareConcurrency; env.isolated = self.crossOriginIsolated;
+  env.hdrDisplay = matchMedia('(dynamic-range: high)').matches;
+  env.webcodecs = typeof VideoDecoder === 'function';
+  const gpuWhy = await gpuSupport();
+  if (!gpuWhy.length) {
+    const a = await gpuAdapter();
+    const i = a.info || {};
+    env.webgpu = `${i.vendor || '?'} ${i.architecture || ''} ${i.description || ''}`.trim();
+    env.timestampQuery = a.features.has('timestamp-query');
+    env.wgStorage = a.limits.maxComputeWorkgroupStorageSize;
+  } else env.webgpu = 'no: ' + gpuWhy.join(', ');
+  for (const [k, v] of Object.entries({ browser: env.browser, platform: env.platform, cores: env.cores,
+    'cross-origin isolated': env.isolated, 'HDR display': env.hdrDisplay, WebCodecs: env.webcodecs, WebGPU: env.webgpu,
+    'timestamp queries': env.timestampQuery, 'user agent': env.ua })) row('env', [k, String(v)]);
+
+  // ---- decode support
+  const sup = $('sup');
+  sup.innerHTML = '<tr><th>codec</th><th>size</th><th>no-preference</th><th>prefer-hardware</th><th>prefer-software</th></tr>';
+  for (const [codec, w, h] of [['av01.0.08M.08', 1920, 1080], ['av01.0.08M.10', 1920, 1080], ['av01.0.12M.10', 3840, 2160]]) {
+    const r = { codec, size: `${w}x${h}` };
+    for (const a of ['no-preference', 'prefer-hardware', 'prefer-software']) {
+      try { r[a] = env.webcodecs && (await VideoDecoder.isConfigSupported({ codec, codedWidth: w, codedHeight: h, hardwareAcceleration: a })).supported; }
+      catch (e) { r[a] = false; }
+    }
+    R.support.push(r);
+    row('sup', [codec, r.size, ...['no-preference', 'prefer-hardware', 'prefer-software'].map(a => (r[a] ? 'yes' : 'no'))],
+        [null, null, ...['no-preference', 'prefer-hardware', 'prefer-software'].map(a => (r[a] ? 'ok' : 'bad'))]);
+  }
+  if (!env.webcodecs || !R.support.some(r => r['no-preference'])) {
+    status('This browser cannot decode AV1: the player is not supported here.');
+  }
+
+  // ---- clips
+  const vectors = (await (await fetch(vec + '/vectors.json')).json()).filter(v => v.nograinMp4);
+  let wasmMod = null;
+  for (const v of vectors) {
+    const params = loadParams(await (await fetch(vec + '/' + v.params)).text());
+    const buf = await (await fetch(vec + '/' + v.nograinMp4)).arrayBuffer();
+    const d = demuxAv1(buf);
+    const name = `${v.name} ${v.width}x${v.height} ${v.bitdepth}-bit${params.trc === 16 ? ' PQ' : params.trc === 18 ? ' HLG' : ''}`;
+    const fmt = { width: v.width, height: v.height, bitdepth: v.bitdepth, layout: v.layout, mtrx: params.mtrx };
+    const n = Math.min(checkFrames, v.frames);
+    // decode with each available decoder preference
+    let decoded = false;
+    for (const accel of ['no-preference', 'prefer-hardware', 'prefer-software']) {
+      let ok = false;
+      try { ok = (await VideoDecoder.isConfigSupported({ codec: d.codec, codedWidth: d.width, codedHeight: d.height, hardwareAcceleration: accel })).supported; } catch {}
+      if (!ok) { row('dec', [name, accel, '–', 'not supported', '', ''], [null, null, null, 'bad']); continue; }
+      status(`decoding ${v.name} (${accel})…`);
+      let format = null, copyMs = 0, exact = 0, checked = 0;
+      try {
+        const sp = await decodeAll(d, accel, async (f, i) => {
+          format = format || f.format;
+          const L = planarLayout(f);
+          if (!L) return;
+          const b = new ArrayBuffer(L.size);
+          const t = performance.now();
+          await f.copyTo(b, { layout: L.planes });
+          copyMs += performance.now() - t;
+          if (i < n && !L.semi) { checked++; if (await sha(b) === v.off[i]) exact++; }
+        });
+        // speed without hashing
+        let cms = 0;
+        const sp2 = await decodeAll(d, accel, async f => { const L = planarLayout(f); if (L) { const t = performance.now(); await f.copyTo(new ArrayBuffer(L.size), { layout: L.planes }); cms += performance.now() - t; } });
+        const fps = sp2.frames / sp2.ms * 1000;
+        R.decode.push({ clip: v.name, accel, format, fps, copyMs: cms / sp2.frames, exact, checked });
+        row('dec', [name, accel, String(format), `${fps.toFixed(1)} fps`, `${fmtMs(cms / sp2.frames)} ms`,
+                    checked ? `${exact}/${checked}` : `not checked (${format})`],
+            [null, null, null, 'num', 'num', checked && exact === checked ? 'ok' : 'bad']);
+        decoded = true;
+      } catch (e) {
+        R.errors.push(`${v.name} ${accel}: ${e.message}`);
+        row('dec', [name, accel, String(format), 'error: ' + e.message, '', ''], [null, null, null, 'bad']);
+      }
+    }
+    if (!decoded) continue;
+    // grain: WebGPU and WebAssembly, both modes, on the browser's own decoder output
+    const engines = [];
+    if (!gpuWhy.length) engines.push('webgpu');
+    try { wasmMod = wasmMod || await import('../web/wasm-grain.mjs'); if (!wasmMod.wasmGrainSupport().length) engines.push('wasm'); } catch (e) { R.errors.push('wasm grain: ' + e.message); }
+    for (const engine of engines) {
+      status(`grain on ${v.name} with ${engine}…`);
+      const res = { full: { ok: 0, ms: [] }, standard: { ok: 0, ms: [] } };
+      let gg = null, wg = null, lastOut = null;
+      try {
+        if (engine === 'webgpu') { gg = await createGpuGrain(); gg.configure(fmt); } else wg = await wasmMod.createWasmGrain();
+        await decodeAll(d, 'no-preference', async (f, i) => {
+          const L = planarLayout(f);
+          if (!L || L.semi) return;
+          const b = new ArrayBuffer(L.size);
+          await f.copyTo(b, { layout: L.planes });
+          for (const mode of ['full', 'standard']) {
+            const pic = params.picture(i);
+            let out;
+            if (gg) {
+              gg.upload(b, L.planes, L.bps); gg.setGrain(pic, mode);
+              let t = await gg.run();
+              const t0 = performance.now(); t = await gg.run(); const wall = performance.now() - t0;
+              res[mode].ms.push(t ? t.arLuma + t.arChroma + t.applyY + t.applyC : wall);
+              out = await gg.readPacked();
+            } else {
+              const r = await wg.apply(b.slice(0), L.planes, L.bps, fmt, pic, mode);
+              res[mode].ms.push(r.ms); out = r.bytes;
+            }
+            if (await sha(out) === v[mode][i]) res[mode].ok++;
+            lastOut = out;
+          }
+        }, n);
+        // drawing speed: the grained picture to a canvas, 20 times
+        const cv = document.createElement('canvas'), ffull = { ...fmt, trc: params.trc, pri: params.pri, range: params.color_range };
+        $('stage').replaceChildren(cv);
+        let ms;
+        if (gg) {
+          const ren = new GpuRenderer(gg, cv); ren.configure(ffull);
+          await gg.device.queue.onSubmittedWorkDone();
+          const t0 = performance.now();
+          for (let k = 0; k < 20; k++) { const enc = gg.device.createCommandEncoder(); ren.encode(enc); gg.device.queue.submit([enc.finish()]); }
+          await gg.device.queue.onSubmittedWorkDone();
+          ms = (performance.now() - t0) / 20;
+        } else {
+          const draw = glRenderer(cv), gl = cv.getContext('webgl2');
+          draw(lastOut, ffull); gl.finish();
+          const t0 = performance.now();
+          for (let k = 0; k < 20; k++) draw(lastOut, ffull);
+          gl.finish();
+          ms = (performance.now() - t0) / 20;
+        }
+        R.draw.push({ clip: v.name, engine, ms });
+        row('draw', [name, engine === 'webgpu' ? 'WebGPU render pass' : 'WebGL2 (texture upload + draw)', fmtMs(ms)], [null, null, 'num']);
+        for (const mode of ['full', 'standard']) {
+          const ms = med(res[mode].ms);
+          R.grain.push({ clip: v.name, engine, mode, exact: res[mode].ok, checked: n, ms,
+                         gpuTimer: engine === 'webgpu' && !!(gg && gg.timestamps) });
+          row('grain', [name, engine === 'webgpu' ? `WebGPU${gg.timestamps ? '' : ' (wall clock)'}` : `WebAssembly, ${wg.threads} threads`, mode,
+                        `${res[mode].ok}/${n}`, fmtMs(ms)], [null, null, null, res[mode].ok === n ? 'ok' : 'bad', 'num']);
+        }
+      } catch (e) {
+        R.errors.push(`${v.name} ${engine}: ${e.message}`);
+        row('grain', [name, engine, '', 'error: ' + e.message, ''], [null, null, null, 'bad']);
+      } finally { if (wg) wg.dispose(); }
+    }
+    // playback through the player
+    for (const engine of engines) {
+      status(`playing ${v.name} with ${engine}…`);
+      try {
+        const c = await createGrainClip(buf, params, { fps: 24000 / 1001, mode: 'full', engine });
+        $('stage').replaceChildren(c);
+        await sleep(300);
+        const s0 = { ...c.stats }, t0 = performance.now();
+        await c.play(); await sleep(3000); c.pause();
+        const dt = (performance.now() - t0) / 1000, st = c.stats;
+        const shown = st.shown - s0.shown, dropped = st.dropped - s0.dropped;
+        R.play.push({ clip: v.name, engine, fps: shown / dt, dropped, hdrOutput: c.hdrOutput, format: c.decoder.format });
+        row('play', [name, engine, `${(shown / dt).toFixed(1)} fps`, String(dropped), c.hdr ? String(c.hdrOutput) : 'SDR clip'],
+            [null, null, 'num', dropped > 3 ? 'warn' : 'ok']);
+        c.dispose();
+      } catch (e) {
+        R.errors.push(`${v.name} play ${engine}: ${e.message}`);
+        row('play', [name, engine, 'error: ' + e.message, '', ''], [null, null, 'bad']);
+      }
+    }
+  }
+  const bad = R.decode.some(x => x.checked && x.exact !== x.checked) || R.grain.some(x => x.exact !== x.checked);
+  status((bad ? 'Done, with MISMATCHES.' : 'Done: every checked picture is identical to dav1d.') + (R.errors.length ? ` ${R.errors.length} error(s).` : ''));
+  if (R.errors.length) logl('errors:\n' + R.errors.join('\n'));
+  try { const r = await fetch('/results', { method: 'POST', body: JSON.stringify(R) }); logl(r.ok ? 'results saved on the server' : 'could not save the results'); }
+  catch (e) { logl('could not save the results: ' + e.message); }
+  $('copy').hidden = false;
+  $('copy').onclick = () => navigator.clipboard.writeText(JSON.stringify(R, null, 1));
+  R.done = true;
+})().catch(e => { status('error: ' + e.message); logl(e.stack || String(e)); R.errors.push(String(e)); R.done = true; });
+</script>
+</body>
+</html>

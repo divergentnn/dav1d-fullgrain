@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grain player check</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fff; --fg: #111; --ok: #0a7a2f; --bad: #b3261e; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #ddd; --ok: #5cd27a; --bad: #ff7b6e; } }
+  body { background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; margin: 16px; }
+  pre { white-space: pre-wrap; } canvas { max-width: 100%; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<h1>Grain player check</h1>
+<p>grain-clip.mjs end to end: the browser decodes each vector's grain-free MP4, the grain comes from its
+PARAMS.json; frames reached by seeking in a scrambled order must be identical to dav1d's. Then 3 s of playback.
+Query: <code>?vec=URL&amp;engine=auto|webgpu|wasm&amp;mode=full,standard&amp;only=name&amp;frames=N</code></p>
+<pre id="log"></pre>
+<div id="stage"></div>
+<script type="module">
+import { createGrainClip, av1Support } from '../web/grain-clip.mjs';
+
+const q = new URLSearchParams(location.search);
+const vec = (q.get('vec') || '../vec').replace(/\/$/, '');
+const engine = q.get('engine') || 'auto', modes = (q.get('mode') || 'full,standard').split(',');
+const only = q.get('only'), maxFrames = +q.get('frames') || 12;
+const logEl = document.getElementById('log');
+const log = (s, cls) => { const e = document.createElement('span'); if (cls) e.className = cls; e.textContent = s + '\n'; logEl.append(e); console.log(s); };
+const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
+const sha = async b => hex(await crypto.subtle.digest('SHA-256', b));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+window.results = { done: false, pass: 0, fail: 0, vectors: [] };
+
+(async () => {
+  const vectors = await (await fetch(vec + '/vectors.json')).json();
+  for (const v of vectors) {
+    if (!v.nograinMp4 || (only && !only.split(',').includes(v.name))) continue;
+    const buf = await (await fetch(vec + '/' + v.nograinMp4)).arrayBuffer();
+    const params = await (await fetch(vec + '/' + v.params)).text();
+    const sup = await av1Support(undefined, v.width, v.height, engine === 'wasm' ? 'wasm' : 'auto');
+    log(`${v.name}: support ${JSON.stringify(sup)}`);
+    const c = await createGrainClip(buf, params, { fps: 24000 / 1001, mode: modes[0], engine });
+    document.getElementById('stage').replaceChildren(c);
+    const n = Math.min(maxFrames, v.frames);
+    const order = [n - 1, 0, Math.floor(n / 2), 1, n - 2, 2, ...Array.from({ length: n }, (_, i) => i)].filter((x, i, a) => x >= 0 && x < n && a.indexOf(x) === i);
+    for (const mode of modes) {
+      await c.setGrainMode(mode);
+      let ok = 0;
+      const bad = [];
+      for (const i of order) {
+        const h = await sha(await c.getFrame(i));
+        if (h === v[mode][i]) ok++; else bad.push(i);
+      }
+      const good = ok === order.length;
+      window.results[good ? 'pass' : 'fail']++;
+      log(`  ${good ? 'ok  ' : 'FAIL'} ${mode} via ${c.engine} (decoder output ${c.decoder.format}): ${ok}/${order.length} frames identical to dav1d` +
+          (good ? '' : ` bad: ${bad.join(',')}`), good ? 'ok' : 'bad');
+    }
+    // playback
+    c.currentTime = 0;
+    await new Promise(r => c.addEventListener('seeked', r, { once: true }));
+    const s0 = { ...c.stats };
+    const t0 = performance.now();
+    await c.play();
+    await sleep(3000);
+    c.pause();
+    const dt = (performance.now() - t0) / 1000, st = c.stats;
+    const shown = st.shown - s0.shown, dropped = st.dropped - s0.dropped;
+    log(`  playback ${dt.toFixed(1)} s: ${shown} frames shown (${(shown / dt).toFixed(1)} fps), ${dropped} dropped, ${st.decoded - s0.decoded} decoded; ` +
+        `grain+draw ${(st.grainMs / Math.max(1, st.grained)).toFixed(2)} ms/frame (CPU side), copyTo ${(st.copyMs / Math.max(1, st.decoded)).toFixed(2)} ms/frame; HDR output ${c.hdrOutput}`);
+    window.results.vectors.push({ name: v.name, engine: c.engine, format: c.decoder.format, shown, dropped, seconds: dt });
+    c.dispose();
+  }
+  window.results.done = true;
+  log(`done: ${window.results.pass} passed, ${window.results.fail} failed`);
+})().catch(e => { log('error: ' + (e.stack || e), 'bad'); window.results.error = String(e); window.results.done = true; });
+</script>
+</body>
+</html>

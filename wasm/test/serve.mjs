@@ -14,8 +14,12 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript', 
 
 export function serve(port, mounts, host = '127.0.0.1') {
   const srv = http.createServer((req, res) => {
+    if (req.handled) return;                    // answered by another listener (selftest-serve.mjs)
     const url = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-    const m = mounts.find(([pre]) => url.startsWith(pre));
+    // a prefix may be mounted more than once: the first directory that has the file wins
+    const cands = mounts.filter(([pre]) => url.startsWith(pre));
+    const m = cands.find(([pre, d]) => { try { return statSync(join(d, normalize(url.slice(pre.length)))).isFile(); } catch { return false; } })
+              || cands[0];
     const hdr = { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp',
                   'Cross-Origin-Resource-Policy': 'same-origin', 'Cache-Control': 'no-cache' };
     if (!m) { res.writeHead(404, hdr); return res.end('not found'); }

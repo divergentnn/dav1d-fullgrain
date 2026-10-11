@@ -38,7 +38,7 @@ const I = {
   RSL: 32, LPITCH: 33, LBW: 34, NCHL: 35, RSC: 36, CPITCH: 37, CBW: 38, NCHC: 39,
   NTC: 57, SOY: 40, SSY_: 41, SOU: 42, SSU: 43, SOV: 44, SSV: 45, BPS: 46,
   DOY: 47, DOU: 48, DOV: 49, DSY: 50, DSC: 51, MONO: 52, SCPU: 53, SCPV: 54, PMAX: 55, CPLANE: 56,
-  MODE: 58, SEED: 59, OVL: 60, NBR: 61, NBC: 62,
+  MODE: 58, SEED: 59, OVL: 60, NBR: 61, NBC: 62, STEPY: 63, STEPC: 136,
   GRID: 64,                        // per plane: 21 previous-row taps (3 x 7, zero outside the lag), c1, c2, c3
 };
 const TPL = 74 * 82;               // a standard-mode template (GRAIN_HEIGHT + 1) x GRAIN_WIDTH, as dav1d allocates it
@@ -204,7 +204,7 @@ fn ar_chroma(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_ind
 // a sample of the input picture (8 or 16 bits, any offsets / strides in bytes)
 fn rsrc(pl: i32, x: i32, y: i32) -> i32 {
   let bps = p(${I.BPS});
-  let b = p(${I.SOY} + 2 * pl) + y * p(${I.SSY_} + 2 * pl) + x * bps;
+  let b = p(${I.SOY} + 2 * pl) + y * p(${I.SSY_} + 2 * pl) + x * select(p(${I.STEPC}), p(${I.STEPY}), pl == 0);
   let w = src[b >> 2u];
   if (bps == 1) { return i32((w >> (u32(b & 3) * 8u)) & 0xffu); }
   return i32((w >> (u32(b & 2) * 8u)) & 0xffffu);
@@ -411,23 +411,40 @@ export async function gpuSupport(powerPreference = 'high-performance') {
   return [];
 }
 
+const devices = new Map();
+/** the page's WebGPU device for this power preference (one for every GpuGrain): {adapter, device} */
+export function gpuDevice(powerPreference = 'high-performance') {
+  if (!devices.has(powerPreference)) {
+    devices.set(powerPreference, (async () => {
+      let adapter = null;                       // a fresh adapter: an adapter makes one device only
+      for (let i = 0; i < 2 && !adapter; i++) adapter = await navigator.gpu.requestAdapter({ powerPreference });
+      if (!adapter) throw new Error('no WebGPU adapter');
+      const features = adapter.features.has('timestamp-query') ? ['timestamp-query'] : [];
+      const device = await adapter.requestDevice({
+        requiredFeatures: features,
+        requiredLimits: {
+          maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+          maxBufferSize: adapter.limits.maxBufferSize,
+          maxComputeInvocationsPerWorkgroup: Math.max(256, ROWS),
+          maxComputeWorkgroupSizeX: Math.max(256, ROWS),
+        },
+      });
+      device.lost.then(() => devices.delete(powerPreference));
+      return { adapter, device };
+    })());
+    devices.get(powerPreference).catch(() => devices.delete(powerPreference));
+  }
+  return devices.get(powerPreference);
+}
+
+/** a grain renderer with its own buffers on the shared device (or opts.device + opts.adapter) */
 export async function createGpuGrain(opts = {}) {
-  const adapter = opts.adapter || await gpuAdapter(opts.powerPreference || 'high-performance');
-  if (!adapter) throw new Error('no WebGPU adapter');
-  const features = adapter.features.has('timestamp-query') ? ['timestamp-query'] : [];
-  const device = opts.device || await adapter.requestDevice({
-    requiredFeatures: features,
-    requiredLimits: {
-      maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
-      maxBufferSize: adapter.limits.maxBufferSize,
-      maxComputeInvocationsPerWorkgroup: Math.max(256, ROWS),
-      maxComputeWorkgroupSizeX: Math.max(256, ROWS),
-    },
-  });
-  return new GpuGrain(adapter, device, features.includes('timestamp-query'));
+  const { adapter, device } = opts.device ? opts : await gpuDevice(opts.powerPreference || 'high-performance');
+  return new GpuGrain(adapter, device, device.features.has('timestamp-query'));
 }
 
 const align = (x, a) => Math.ceil(x / a) * a;
+const pipeCache = new WeakMap();
 
 // AR coefficients (AV1 order: rows -lag..-1 x columns -lag..lag, then -lag..-1 in the row) as a fixed 3 x 7 grid
 // of previous-row taps (row -3 first) and the in-row taps c1, c2, c3 (columns -1, -2, -3)
@@ -441,22 +458,26 @@ function grid(P, at, co, lag) {
 
 export class GpuGrain {
   constructor(adapter, device, timestamps) {
+    this.I = I;
     this.adapter = adapter;
     this.device = device;
     this.info = adapter.info || {};
     this.timestamps = timestamps;
-    const module = device.createShaderModule({ code: WGSL });
-    this.module = module;
-    const B = (binding, type) => ({ binding, visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT, buffer: { type } });
-    this.bgl = device.createBindGroupLayout({ entries: [
-      B(0, 'uniform'), B(1, 'read-only-storage'), B(2, 'storage'), B(3, 'storage'),
-      B(4, 'storage'), B(5, 'read-only-storage'), B(6, 'storage'), B(7, 'storage'),
-    ] });
-    const layout = device.createPipelineLayout({ bindGroupLayouts: [this.bgl] });
-    const pipe = entryPoint => device.createComputePipeline({ layout, compute: { module, entryPoint } });
-    this.pipes = { ar_luma: pipe('ar_luma'), ar_chroma: pipe('ar_chroma'), lumaterm: pipe('lumaterm'),
-                   std_tpl_luma: pipe('std_tpl_luma'), std_tpl_chroma: pipe('std_tpl_chroma'), std_offsets: pipe('std_offsets'),
-                   apply_y: pipe('apply_y'), apply_c: pipe('apply_c') };
+    if (!pipeCache.has(device)) {               // shader + pipelines once per device
+      const module = device.createShaderModule({ code: WGSL });
+      const B = (binding, type) => ({ binding, visibility: GPUShaderStage.COMPUTE, buffer: { type } });
+      const bgl = device.createBindGroupLayout({ entries: [
+        B(0, 'uniform'), B(1, 'read-only-storage'), B(2, 'storage'), B(3, 'storage'),
+        B(4, 'storage'), B(5, 'read-only-storage'), B(6, 'storage'), B(7, 'storage'),
+      ] });
+      const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
+      const pipe = entryPoint => device.createComputePipeline({ layout, compute: { module, entryPoint } });
+      pipeCache.set(device, { bgl, pipes: {
+        ar_luma: pipe('ar_luma'), ar_chroma: pipe('ar_chroma'), lumaterm: pipe('lumaterm'),
+        std_tpl_luma: pipe('std_tpl_luma'), std_tpl_chroma: pipe('std_tpl_chroma'), std_offsets: pipe('std_offsets'),
+        apply_y: pipe('apply_y'), apply_c: pipe('apply_c') } });
+    }
+    ({ bgl: this.bgl, pipes: this.pipes } = pipeCache.get(device));
     this.params = new Int32Array(NPARAM);
     this.uni = device.createBuffer({ size: NPARAM * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.tabs = device.createBuffer({ size: (2048 + 3 * 4096) * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
@@ -494,6 +515,7 @@ export class GpuGrain {
     P[I.DOY] = 0; P[I.DSY] = dsy; P[I.DOU] = dsy * H; P[I.DOV] = dsy * H + dsc * CH; P[I.DSC] = dsc;
     this.dstSamples = dsy * H + 2 * dsc * CH;
     const dev = this.device;
+    if (this.srcBuf && !this.ownSrc) this.srcBuf = null;      // not ours to destroy
     for (const b of ['fl', 'fc', 'lt', 'sb', 'dst', 'srcBuf', 'readBuf']) if (this[b]) { this[b].destroy(); this[b] = null; }
     P[I.NBR] = Math.ceil(H / 32); P[I.NBC] = Math.ceil(W / 32);
     this.sb = dev.createBuffer({ size: (3 * TPL + P[I.NBR] * P[I.NBC]) * 4, usage: GPUBufferUsage.STORAGE });
@@ -507,13 +529,39 @@ export class GpuGrain {
     this.fieldBytes = this.fl.size + this.fc.size + this.lt.size + this.sb.size;
   }
 
-  /** the input picture: bytes (ArrayBuffer / view) with per-plane {offset, stride} in bytes; bps 1 or 2 */
-  upload(bytes, planes, bps) {
+  /** a GPU buffer (STORAGE usage) that already holds the input picture, e.g. filled by VideoFrame.copyTo() into
+   *  its mapped range (sourceBuffer()); planes / bps / semi as for upload() */
+  setSource(buffer, planes, bps, semi = false) {
+    if (this.srcBuf !== buffer) { this.srcBuf = buffer; this.ownSrc = false; this.bind = null; }
+    this.layoutPlanes(planes, bps, semi);
+  }
+
+  /** a mapped GPU buffer of `bytes` for the decoder to copy a picture into: -> {buffer, range (ArrayBuffer)};
+   *  unmap() it, then setSource() */
+  sourceBuffer(bytes) {
+    const buffer = this.device.createBuffer({ size: align(bytes, 4), usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });
+    return { buffer, range: buffer.getMappedRange() };
+  }
+
+  layoutPlanes(planes, bps, semi) {
+    const P = this.params;
+    for (let i = 0; i < 3; i++) {
+      const pl = planes[Math.min(i, planes.length - 1)];
+      P[I.SOY + 2 * i] = pl.offset; P[I.SSY_ + 2 * i] = pl.stride;
+    }
+    P[I.BPS] = bps; P[I.STEPY] = bps; P[I.STEPC] = semi ? 2 * bps : bps;
+    if (semi) { P[I.SOV] = P[I.SOU] + bps; P[I.SSV] = P[I.SSU]; }
+  }
+
+  /** the input picture: bytes (ArrayBuffer / view) with per-plane {offset, stride} in bytes; bps 1 or 2;
+   *  semi = true: planes[1] is interleaved U V (NV12), planes[2] is ignored */
+  upload(bytes, planes, bps, semi = false) {
     const P = this.params, dev = this.device;
     const u8 = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const size = align(u8.byteLength, 4);
-    if (!this.srcBuf || this.srcSize < size) {
-      if (this.srcBuf) this.srcBuf.destroy();
+    if (!this.srcBuf || !this.ownSrc || this.srcSize < size) {
+      if (this.srcBuf && this.ownSrc) this.srcBuf.destroy();
+      this.ownSrc = true;
       this.srcBuf = dev.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
       this.srcSize = size;
       this.bind = null;
@@ -521,11 +569,7 @@ export class GpuGrain {
     if (u8.byteLength % 4) {                  // writeBuffer wants a multiple of 4 bytes
       const t = new Uint8Array(size); t.set(u8); dev.queue.writeBuffer(this.srcBuf, 0, t);
     } else dev.queue.writeBuffer(this.srcBuf, 0, u8);
-    for (let i = 0; i < 3; i++) {
-      const pl = planes[Math.min(i, planes.length - 1)];
-      P[I.SOY + 2 * i] = pl.offset; P[I.SSY_ + 2 * i] = pl.stride;
-    }
-    P[I.BPS] = bps;
+    this.layoutPlanes(planes, bps, semi);
   }
 
   /** the grain of this picture: null (none) or loadParams(...).picture(n); mode 'full' or 'standard' */

@@ -155,3 +155,23 @@ export function loadParams(json) {
     },
   });
 }
+
+/** a picture's parameters as the int32 block fgjs_apply() (wasm/fgjs.c) reads */
+export function paramsInt32(pic) {
+  const a = new Int32Array(165);
+  let k = 0;
+  a[k++] = pic.seed; a[k++] = pic.num_y_points;
+  for (let i = 0; i < 14; i++) { const pt = pic.y_points[i] || [0, 0]; a[k++] = pt[0]; a[k++] = pt[1]; }
+  a[k++] = pic.chroma_scaling_from_luma; a[k++] = pic.num_uv_points[0]; a[k++] = pic.num_uv_points[1];
+  for (let pl = 0; pl < 2; pl++)
+    for (let i = 0; i < 10; i++) { const pt = pic.uv_points[pl][i] || [0, 0]; a[k++] = pt[0]; a[k++] = pt[1]; }
+  a[k++] = pic.scaling_shift; a[k++] = pic.ar_coeff_lag;
+  for (let i = 0; i < 24; i++) a[k++] = pic.ar_coeffs_y[i] || 0;
+  for (let pl = 0; pl < 2; pl++) for (let i = 0; i < 28; i++) a[k++] = pic.ar_coeffs_uv[pl][i] || 0;
+  a[k++] = pic.ar_coeff_shift; a[k++] = pic.grain_scale_shift;
+  a[k++] = pic.uv_mult[0]; a[k++] = pic.uv_mult[1];
+  a[k++] = pic.uv_luma_mult[0]; a[k++] = pic.uv_luma_mult[1];
+  a[k++] = pic.uv_offset[0]; a[k++] = pic.uv_offset[1];
+  a[k++] = pic.overlap_flag; a[k++] = pic.clip_to_restricted_range;
+  return a;
+}
