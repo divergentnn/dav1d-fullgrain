@@ -108,7 +108,7 @@ export async function createGrainClip(buffer, params, opts = {}) {
   const fmt = { width: P.width, height: P.height, bitdepth: P.bitdepth, layout: P.layout, mtrx: P.mtrx,
                 trc: P.trc, pri: P.pri, range: P.color_range };
   const dcfg = { codec: d.codec, codedWidth: d.width, codedHeight: d.height,
-                 hardwareAcceleration: opts.hw || 'no-preference', optimizeForLatency: true };
+                 hardwareAcceleration: opts.hw || 'no-preference', optimizeForLatency: opts.lowLatency !== false };
   if (typeof VideoDecoder !== 'function') throw new Error('this browser cannot decode AV1 (no WebCodecs)');
   if (!(await VideoDecoder.isConfigSupported(dcfg)).supported) throw new Error(`this browser cannot decode AV1 (${d.codec})`);
   const eng = opts.engine && opts.engine !== 'auto' ? { engine: opts.engine } : await grainEngineSupport();
