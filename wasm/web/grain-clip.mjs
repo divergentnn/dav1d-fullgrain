@@ -130,6 +130,8 @@ export async function createGrainClip(buffer, params, opts = {}) {
   const cacheMax = Math.max(6, Math.floor((opts.cacheBytes || 256e6) / frameBytes));
   const cache = new Map(), pending = new Map(), rvfc = [];
   const stats = { decoded: 0, shown: 0, dropped: 0, grainMs: 0, grained: 0, copyMs: 0, format: null, engine: eng.engine };
+  const trace = opts.trace ? [] : null;          // [time, event, frame] for diagnosis
+  const T = (ev, n) => { if (trace && trace.length < 20000) trace.push([+performance.now().toFixed(1), ev, n]); };
   let mode = opts.mode || 'standard', cur = -1, time = 0.5 / fps, seekTok = 0;
   let playing = false, raf = 0, t0 = 0, f0 = 0, seeking = false, disposed = false, err = null;
   let dec = null, gen = 0, feedPos = 0, outPos = 0, keepFrom = 0, target = -1;
@@ -176,6 +178,7 @@ export async function createGrainClip(buffer, params, opts = {}) {
 
   async function onOutput(frame, g) {
     const n = Math.round(frame.timestamp / US);
+    T('out', n);
     try {
       if (g !== gen || disposed) return;
       outPos = Math.max(outPos, n + 1);
@@ -209,6 +212,7 @@ export async function createGrainClip(buffer, params, opts = {}) {
       }
       stats.copyMs += performance.now() - t;
       stats.decoded++;
+      T('ready', n);
       if (g !== gen) { if (e.gpu) gg.releaseFrame(e.gpu); return; }
       put(e);
       const p = pending.get(n);
@@ -227,11 +231,12 @@ export async function createGrainClip(buffer, params, opts = {}) {
   function pump() {
     if (!dec || dec.state !== 'configured') return;
     for (const m of pending.keys()) if (m < outPos + 48) target = Math.max(target, m);
-    const ahead = playing ? 6 : 1;
-    while (feedPos < N && feedPos <= target + ahead && dec.decodeQueueSize < 3 && feedPos - outPos < 8) {
+    const ahead = playing ? 8 : 1, depth = playing ? 12 : 8;  // playing: a deeper pipeline for the decoder's latency
+    while (feedPos < N && feedPos <= target + ahead && dec.decodeQueueSize < (playing ? 6 : 3) && feedPos - outPos < depth) {
       const s = d.samples[feedPos];
       dec.decode(new EncodedVideoChunk({ type: s.sync ? 'key' : 'delta', timestamp: feedPos * US,
                                          data: d.bytes.subarray(s.offset, s.offset + s.size) }));
+      T('feed', feedPos);
       feedPos++;
     }
     if (feedPos >= N && outPos < N && !flushed) { flushed = true; dec.flush().catch(() => {}); }
@@ -306,10 +311,12 @@ export async function createGrainClip(buffer, params, opts = {}) {
     raf = requestAnimationFrame(loop);
     if (busy) return;
     const tgt = Math.min(N - 1, f0 + Math.floor((now - t0) * fps / 1000));
-    for (let n = cur + 1; n <= Math.min(N - 1, cur + 6); n++) want(n).catch(() => {});
+    for (let n = cur + 1; n <= Math.min(N - 1, cur + 8); n++) want(n).catch(() => {});
     let best = -1;
     for (let n = tgt; n > cur; n--) if (cache.has(n)) { best = n; break; }
+    T('tick', tgt);
     if (best > cur) {
+      T('present', best);
       stats.dropped += best - cur - 1;
       busy = true;
       try { await present(cache.get(best), now, playTok); } finally { busy = false; }
@@ -334,6 +341,7 @@ export async function createGrainClip(buffer, params, opts = {}) {
     hdrOutput: { get: () => !!(ren && ren.extended) },
     frameCount: { get: () => N },
     stats: { get: () => stats },
+    trace: { get: () => trace },
     error: { get: () => err },
     currentTime: {
       get: () => (playing ? (cur + 0.5) / fps : time),

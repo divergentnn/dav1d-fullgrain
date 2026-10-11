@@ -546,16 +546,19 @@ export class GpuGrain {
       for (const b of this.frameFree || []) b.destroy();
       this.stageFree = []; this.frameFree = []; this.poolSize = size;
     }
-    let st = this.stageFree.pop();
-    if (st) await st.mapAsync(GPUMapMode.WRITE);
-    else st = dev.createBuffer({ size, usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC, mappedAtCreation: true });
+    // staging buffers are mapped again as soon as their copy is done, so one is usually ready (no mapAsync wait
+    // while the decoder holds the frame)
+    const st = this.stageFree.pop() ||
+               dev.createBuffer({ size, usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC, mappedAtCreation: true });
     try { await frame.copyTo(st.getMappedRange(), { layout: layout.planes }); } finally { st.unmap(); }
     const fb = this.frameFree.pop() || dev.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const enc = dev.createCommandEncoder();
     enc.copyBufferToBuffer(st, 0, fb, 0, size);
     dev.queue.submit([enc.finish()]);
     const pools = this.stageFree;
-    dev.queue.onSubmittedWorkDone().then(() => { if (this.stageFree === pools && pools.length < 4) pools.push(st); else st.destroy(); });
+    st.mapAsync(GPUMapMode.WRITE).then(() => {
+      if (this.stageFree === pools && pools.length < 6) pools.push(st); else st.destroy();
+    }, () => st.destroy());
     return fb;
   }
 

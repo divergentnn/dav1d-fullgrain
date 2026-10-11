@@ -39,6 +39,7 @@ if (opt('dump')) q.set('dump', '1');
 if (args.includes('--repcheck')) q.set('repcheck', '1');
 if (opt('hw')) q.set('hw', opt('hw'));
 if (opt('engine')) q.set('engine', opt('engine'));
+if (args.includes('--detach')) q.set('detach', '1');
 await page.goto(`http://127.0.0.1:${port}/test/${opt('page', 'gpu-test.html')}?${q}`);
 await page.waitForFunction(() => window.results && window.results.done, null, { timeout: +opt('timeout', 1800) * 1000, polling: 500 });
 const r = await page.evaluate(() => window.results);

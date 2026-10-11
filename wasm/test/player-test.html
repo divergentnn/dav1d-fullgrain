@@ -42,7 +42,7 @@ window.results = { done: false, pass: 0, fail: 0, vectors: [] };
     const sup = await av1Support(undefined, v.width, v.height, engine === 'wasm' ? 'wasm' : 'auto');
     log(`${v.name}: support ${JSON.stringify(sup)}`);
     const c = await createGrainClip(buf, params, { fps: 24000 / 1001, mode: modes[0], engine });
-    document.getElementById('stage').replaceChildren(c);
+    if (!q.get('detach')) document.getElementById('stage').replaceChildren(c);
     const n = Math.min(maxFrames, v.frames);
     const order = [n - 1, 0, Math.floor(n / 2), 1, n - 2, 2, ...Array.from({ length: n }, (_, i) => i)].filter((x, i, a) => x >= 0 && x < n && a.indexOf(x) === i);
     for (const mode of modes) {
