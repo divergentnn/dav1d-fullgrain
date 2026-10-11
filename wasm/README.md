@@ -1,4 +1,4 @@
-# dav1d-fullgrain in the browser (WebAssembly)
+# av1-fullgrain in the browser (WebAssembly)
 
 This builds the fork, full-frame film grain included, as a WebAssembly module
 with SIMD and threads. It comes with a small player kit: a decode Worker, and

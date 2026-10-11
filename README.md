@@ -1,8 +1,16 @@
-# dav1d-fullgrain
+# av1-fullgrain
 
-A fork of [dav1d](https://code.videolan.org/videolan/dav1d) 1.5.4, the AV1
-decoder used by ffmpeg, mpv and most players. It draws AV1 film grain over the
-**whole frame**, instead of tiling one small grain patch over it.
+Full-frame AV1 film grain: the grain an AV1 file signals, drawn over the
+**whole frame** instead of tiled from one small grain patch. It has three
+parts:
+
+- **A dav1d fork** (this repository): [dav1d](https://code.videolan.org/videolan/dav1d)
+  1.5.4, the AV1 decoder used by ffmpeg, mpv and most players, with
+  full-frame grain synthesis. Its library is a drop-in replacement for
+  `libdav1d`.
+- **A browser player** ([wasm/](wasm/README.md)): the fork built for
+  WebAssembly, with a player kit that draws on a `<canvas>`.
+- **Later, a GPU path for mpv** (libplacebo): not written yet.
 
 Encoders such as SVT-AV1 and libaom remove film grain before encoding and
 send a short grain description instead: an auto-regressive (AR) noise model
@@ -138,8 +146,8 @@ This replaces the `dav1d` package system-wide (`provides=dav1d`,
 `conflicts=dav1d`):
 
 ```sh
-git clone https://github.com/divergentnn/dav1d-fullgrain.git
-cd dav1d-fullgrain/packaging/arch
+git clone https://github.com/divergentnn/av1-fullgrain.git
+cd av1-fullgrain/packaging/arch
 makepkg -si
 ```
 
@@ -150,8 +158,8 @@ Back to stock: `sudo pacman -S dav1d`. The PKGBUILD runs the test suite in
 ### Other Linux
 
 ```sh
-git clone https://github.com/divergentnn/dav1d-fullgrain.git
-cd dav1d-fullgrain
+git clone https://github.com/divergentnn/av1-fullgrain.git
+cd av1-fullgrain
 meson setup build --buildtype=release --prefix=/usr/local
 ninja -C build
 sudo ninja -C build install
@@ -175,8 +183,8 @@ contrib/mpv/mpv-fullgrain FILE.mkv           # or: mpv-fullgrain standard|dual|m
 ### macOS (Homebrew)
 
 ```sh
-git clone https://github.com/divergentnn/dav1d-fullgrain.git
-cd dav1d-fullgrain
+git clone https://github.com/divergentnn/av1-fullgrain.git
+cd av1-fullgrain
 packaging/macos/install.sh
 ```
 

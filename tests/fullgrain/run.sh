@@ -1,5 +1,5 @@
 #!/bin/sh
-# dav1d-fullgrain tests.
+# av1-fullgrain tests (the dav1d fork).
 #
 #   tests/fullgrain/run.sh FORK_DAV1D_CLI [UPSTREAM_DAV1D_CLI]
 #

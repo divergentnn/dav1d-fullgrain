@@ -1,4 +1,4 @@
-// dav1d-fullgrain in the browser: a <canvas> that behaves like a (muted)
+// av1-fullgrain in the browser: a <canvas> that behaves like a (muted)
 // <video> for a whole AV1-in-MP4 clip held in memory, decoded by dav1d in
 // WebAssembly (dav1d-worker.mjs) and drawn with WebGL2.
 //
@@ -17,7 +17,7 @@
 // Needs WebAssembly SIMD, WebGL2 and a cross-origin isolated page
 // (COOP: same-origin, COEP: require-corp) for the decoder's threads.
 //
-// Copyright © 2026, divergentnn (dav1d-fullgrain). SPDX-License-Identifier: BSD-2-Clause
+// Copyright © 2026, divergentnn (av1-fullgrain). SPDX-License-Identifier: BSD-2-Clause
 
 const SIMD_TEST = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10,
   10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]);

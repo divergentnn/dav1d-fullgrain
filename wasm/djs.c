@@ -1,12 +1,12 @@
 /*
- * dav1d-fullgrain for WebAssembly: a small C API for JavaScript.
+ * av1-fullgrain (dav1d fork) for WebAssembly: a small C API for JavaScript.
  *
  * The API shape (open / feed data / take pictures / close) follows dav1d.js
  * by Kagami Hiiragi (https://github.com/Kagami/dav1d.js, CC0); this version
  * adds 8/10-bit output without conversion, threads, a picture queue and the
  * film-grain mode.
  *
- * Copyright © 2026, divergentnn (dav1d-fullgrain)
+ * Copyright © 2026, divergentnn (av1-fullgrain)
  * SPDX-License-Identifier: BSD-2-Clause
  */
 #include <errno.h>

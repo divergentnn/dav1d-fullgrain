@@ -1,5 +1,5 @@
 /*
- * Copyright © 2026, divergentnn (dav1d-fullgrain)
+ * Copyright © 2026, divergentnn (av1-fullgrain)
  * SPDX-License-Identifier: BSD-2-Clause
  * (the same terms as dav1d, see COPYING)
  *

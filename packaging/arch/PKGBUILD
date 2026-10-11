@@ -13,7 +13,7 @@ pkgver=1.5.4.r6
 pkgrel=1
 pkgdesc='AV1 decoder dav1d with full-frame film grain synthesis (non-conformant fork)'
 arch=('x86_64' 'aarch64')
-url='https://github.com/divergentnn/dav1d-fullgrain'
+url='https://github.com/divergentnn/av1-fullgrain'
 license=('BSD-2-Clause')
 depends=('glibc')
 makedepends=('git' 'meson' 'ninja')
@@ -21,7 +21,7 @@ makedepends_x86_64=('nasm')
 provides=('dav1d=1.5.4' 'libdav1d.so=7-64')
 conflicts=('dav1d')
 # DAV1D_FULLGRAIN_SRC overrides the source (e.g. file:///path/to/checkout)
-_src=${DAV1D_FULLGRAIN_SRC:-https://github.com/divergentnn/dav1d-fullgrain.git}
+_src=${DAV1D_FULLGRAIN_SRC:-https://github.com/divergentnn/av1-fullgrain.git}
 _branch=${DAV1D_FULLGRAIN_BRANCH:-grain-variants}
 _grain_mode=${DAV1D_FULLGRAIN_MODE:-full}
 source=("dav1d-fullgrain::git+${_src}#branch=${_branch}")

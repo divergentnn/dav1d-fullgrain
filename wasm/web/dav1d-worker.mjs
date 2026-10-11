@@ -1,4 +1,4 @@
-// dav1d-fullgrain decode worker (module Worker). One instance per clip.
+// av1-fullgrain decode worker (module Worker). One instance per clip.
 //
 // Messages in:
 //   {type: 'open', buffer: ArrayBuffer (MP4), threads, mode}
@@ -11,7 +11,7 @@
 //   {type: 'frame', n, id, w, h, bpc, layout, y, u, v, grain, mtrx, full_range}  (planes transferred)
 //   {type: 'error', message}
 //
-// Copyright © 2026, divergentnn (dav1d-fullgrain). SPDX-License-Identifier: BSD-2-Clause
+// Copyright © 2026, divergentnn (av1-fullgrain). SPDX-License-Identifier: BSD-2-Clause
 import createDav1d from './dav1d-fg.mjs';
 import { createFile, MP4BoxBuffer } from './mp4box.all.mjs';   // vendor/mp4box, copied next to this file by build.sh
 
