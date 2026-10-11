@@ -39,6 +39,11 @@ dav1d_input_objs = static_library('dav1d_input',
     build_by_default : false,
 )
 
+# av1-grain-seed (av1-fullgrain): standalone, built even without the dav1d tools
+if get_option('av1fg')
+    subdir('av1fg')
+endif
+
 # Leave subdir if tools are disabled
 if not get_option('enable_tools')
     subdir_done()

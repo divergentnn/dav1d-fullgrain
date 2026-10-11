@@ -53,6 +53,11 @@ jobs:
       - name: Timing
         run: sh tests/fullgrain/timing.sh build/tools/dav1d
 
+      - name: av1-grain-seed (containers, edits, determinism; parser and edits vs libdav1d)
+        run: |
+          meson test -C build --suite av1fg --suite av1fg-dav1d --print-errorlogs
+          build/tools/av1fg/av1-grain-seed --analyze tests/fullgrain/timing_720p_10bit_fgt03.ivf
+
       - name: C-only build (no asm, no SIMD kernels) and grain_mode_default=standard
         if: runner.os == 'Linux'
         run: |
@@ -60,3 +65,30 @@ jobs:
             -Denable_asm=false -Dgrain_mode_default=standard
           ninja -C build-noasm
           DEFAULT_MODE=standard sh tests/fullgrain/run.sh build-noasm/tools/dav1d upstream/build/tools/dav1d
+
+  # av1-grain-seed on Windows (MSVC): the tool and its container/edit tests
+  # (the libdav1d cross-checks run on Linux and macOS)
+  av1-grain-seed-windows:
+    name: windows-x86_64 (av1-grain-seed, MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Dependencies
+        run: pip install meson ninja
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build av1-grain-seed
+        run: |
+          meson setup build --buildtype=release -Denable_asm=false -Denable_tools=false -Denable_tests=false
+          ninja -C build tools/av1fg/av1-grain-seed.exe
+
+      - name: Test
+        run: |
+          meson test -C build --suite av1fg --no-rebuild --print-errorlogs
+          build/tools/av1fg/av1-grain-seed.exe --analyze tests/fullgrain/timing_720p_10bit_fgt03.ivf

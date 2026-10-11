@@ -1,0 +1,17 @@
+# md5 of `av1-grain-seed -o` outputs (default options); the same on every platform
+a0ee71f4cc7b4ac420f84391939d0d06 annexb.obu
+bfa4db6addb391c3408a6f9fa974b1aa fgt01_420_8bit_lag2_nooverlap.ivf
+73bf48f9649effad09ee5683fe4f4942 fgt03_422_10bit.ivf
+f4e79f72b8596ad99ab67e67d4dc59e1 fgt06_444_10bit.ivf
+50bc7180f859adf800ecde75d61c97c9 fgt12_444_8bit_lag2_nooverlap.ivf
+3243f1a388968784d55a7870edf3cd11 fgt15_420_10bit_csfl.ivf
+58965572dfdd0011c68706f19b96addb fgt16_420_10bit_odd.ivf
+b6f498359e43d0662c6ea157cea004f7 fp.ffmpeg.mkv
+a63483cba6bdd8f6ebfa6f0d3e5e197c fp.frag.mp4
+4fbe5864b3fd751387250b3012c38a2c fp.ivf
+249180afec10f629ecc2b017de960f05 fp.mkvmerge.mkv
+b466d6c01550449cc6ef334cf7456de2 fp.mp4
+0520540e7255b2eb421f7b449f5b57fe fp.webm
+4ad0a982eadaa7d718593a4e50a3976a redundant.ivf
+f736a96052a09229af10031e5a06ea66 section5.obu
+b933714c44edde7344d1cfd537a285f4 timing_720p_10bit_fgt03.ivf

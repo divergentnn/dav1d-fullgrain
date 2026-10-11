@@ -79,3 +79,8 @@ option('grain_force',
     type: 'boolean',
     value: true,
     description: 'dav1d-fullgrain: apply the non-standard grain even when the caller turned grain off, and hide the grain parameters from it (players that would draw standard grain on the GPU, e.g. mpv + libplacebo). DAV1D_GRAIN_FORCE=0/1 overrides it at runtime')
+
+option('av1fg',
+    type: 'boolean',
+    value: true,
+    description: 'av1-fullgrain: build av1-grain-seed, which replaces unlucky film grain seeds in existing AV1 files (IVF, OBU, MP4, Matroska)')
