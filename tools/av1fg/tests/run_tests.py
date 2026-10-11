@@ -185,6 +185,10 @@ def main():
         junk = os.path.join(tmp, "junk.bin")
         open(junk, "wb").write(b"this is not a video file" * 40)
         check(run([tool, junk]).returncode == 1, "non-AV1 file refused")
+        same = os.path.join(tmp, "same.ivf")
+        shutil.copyfile(f, same)
+        r = run([tool, "-o", same, same])
+        check(r.returncode == 2 and md5(same) == md5(f), "-o naming the input refused, input untouched")
         r = run([tool, "--analyze", os.path.join(fixtures, "fp.mkvmerge.mkv")])
         check(r.returncode == 0 and "grain seeds:" in r.stdout, "--analyze report")
     finally:

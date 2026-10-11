@@ -12,7 +12,7 @@
 #if defined(__APPLE__)
 #define _DARWIN_C_SOURCE
 #elif !defined(_GNU_SOURCE)
-#define _GNU_SOURCE /* fseeko, copy_file_range */
+#define _GNU_SOURCE /* fseeko */
 #endif
 #endif
 #include "av1fg_scan.h"
@@ -30,14 +30,8 @@
 #else
 #define fseek64 fseeko
 #endif
-#if defined(__linux__)
-#include <fcntl.h>
-#include <sys/ioctl.h>
+#if !defined(_WIN32)
 #include <sys/stat.h>
-#include <unistd.h>
-#ifndef FICLONE
-#define FICLONE _IOW(0x94, 9, int)
-#endif
 #endif
 
 #define VERSION "1.0"
@@ -64,6 +58,7 @@ static void usage(FILE *o)
             "                    repeated), for testing\n"
             "  --dump            print every frame header: seed, offsets, grain parameters\n"
             "  --dump-display    print the grain parameters per displayed frame\n"
+            "  --scores FILE     write per-frame seed ratings (old and new) as TSV\n"
             "  --track N         MP4 track_ID / Matroska track number (default: first AV1 track)\n"
             "  --strict          refuse non-conformant streams (e.g. frame header copies\n"
             "                    that differ)\n"
@@ -134,69 +129,17 @@ static void dump_cb(void *ctx, const Av1Obu *obu, int64_t off, const Av1fgScan *
 
 /* ---------------- writing ---------------- */
 
-static int copy_file(const char *in, const char *out)
+/* 1 if both paths name the same existing file */
+static int same_file(const char *a, const char *b)
 {
-#if defined(__linux__)
-    {
-        const int a = open(in, O_RDONLY);
-        if (a >= 0) {
-            const int b = open(out, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (b >= 0) {
-                int ok = ioctl(b, FICLONE, a) == 0; /* reflink (btrfs, xfs) */
-                if (!ok) {
-                    struct stat stt;
-                    if (!fstat(a, &stt)) {
-                        off_t left = stt.st_size;
-                        ok = 1;
-                        while (left > 0) {
-                            const ssize_t n = copy_file_range(a, NULL, b, NULL, (size_t)left, 0);
-                            if (n <= 0) {
-                                ok = left == stt.st_size ? -1 : 0; /* -1: not supported, fall back */
-                                break;
-                            }
-                            left -= n;
-                        }
-                    }
-                }
-                close(a);
-                close(b);
-                if (ok == 1)
-                    return 0;
-                if (ok == 0)
-                    return -1;
-            } else {
-                close(a);
-                return -1;
-            }
-        }
-    }
+    if (!strcmp(a, b))
+        return 1;
+#if !defined(_WIN32)
+    struct stat sa, sb;
+    if (!stat(a, &sa) && !stat(b, &sb))
+        return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
 #endif
-    FILE *a = fopen(in, "rb"), *b = fopen(out, "wb");
-    if (!a || !b) {
-        if (a)
-            fclose(a);
-        if (b)
-            fclose(b);
-        return -1;
-    }
-    const size_t bs = 1 << 22;
-    char *buf = malloc(bs);
-    int ret = buf ? 0 : -1;
-    while (!ret) {
-        const size_t n = fread(buf, 1, bs, a);
-        if (n && fwrite(buf, 1, n, b) != n)
-            ret = -1;
-        if (n < bs) {
-            if (ferror(a))
-                ret = -1;
-            break;
-        }
-    }
-    free(buf);
-    fclose(a);
-    if (fclose(b))
-        ret = -1;
-    return ret;
+    return 0;
 }
 
 static int cmp_loc(const void *a, const void *b)
@@ -205,52 +148,109 @@ static int cmp_loc(const void *a, const void *b)
     return x->byte < y->byte ? -1 : x->byte > y->byte;
 }
 
-/* write the new seeds into f (opened r+b); returns the number of fields written */
-static int64_t apply_patches(FILE *f, const Av1fgScan *s, int64_t **patched_bytes, size_t *n_patched)
+/* the byte edits for the new seeds (and the Matroska CRC-32s), sorted by offset */
+static int build_edits(FILE *in, const Av1fgScan *s, Av1fgEdit **out, size_t *n_out, int64_t *fields, int *crcs)
 {
     Av1fgLoc *l = malloc((s->n_locs + 1) * sizeof(*l));
-    int64_t *pb = malloc((s->n_locs * 3 + 1) * sizeof(*pb));
-    if (!l || !pb) {
+    size_t cap = s->n_locs * 3 + 16, n = 0, nl = 0;
+    Av1fgEdit *e = malloc(cap * sizeof(*e));
+    if (!l || !e) {
         free(l);
-        free(pb);
+        free(e);
         return -1;
     }
-    size_t n = 0, np = 0;
     for (size_t i = 0; i < s->n_locs; i++) {
         const Av1fgFrame *fr = &s->frames[s->locs[i].frame];
         if (fr->new_seed != fr->seed)
-            l[n++] = s->locs[i];
+            l[nl++] = s->locs[i];
     }
-    qsort(l, n, sizeof(*l), cmp_loc);
-    int64_t written = 0;
-    for (size_t i = 0; i < n; i++) {
+    qsort(l, nl, sizeof(*l), cmp_loc);
+    for (size_t i = 0; i < nl; i++) {
         const Av1fgFrame *fr = &s->frames[l[i].frame];
-        uint8_t b[3];
+        uint8_t b[3], o[3];
         const size_t nb = l[i].bit ? 3 : 2;
-        if (av1fg_read_at(f, l[i].byte, b, nb) != nb)
+        if (av1fg_read_at(in, l[i].byte, b, nb) != nb)
             goto fail;
         if (av1_get_bits16(b, l[i].bit) != fr->seed) {
             fprintf(stderr, "error: seed at %lld is %u, expected %u\n", (long long)l[i].byte,
                     av1_get_bits16(b, l[i].bit), fr->seed);
             goto fail;
         }
+        memcpy(o, b, nb);
         av1_put_bits16(b, l[i].bit, fr->new_seed);
-        if (fseek64(f, l[i].byte, SEEK_SET) || fwrite(b, 1, nb, f) != nb)
-            goto fail;
         for (size_t k = 0; k < nb; k++)
-            pb[np++] = l[i].byte + (int64_t)k;
-        written++;
+            if (b[k] != o[k])
+                e[n++] = (Av1fgEdit){ l[i].byte + (int64_t)k, o[k], b[k] };
     }
-    if (fflush(f))
-        goto fail;
+    *fields = (int64_t)nl;
     free(l);
-    *patched_bytes = pb;
-    *n_patched = np;
-    return written;
+    *crcs = av1fg_crc_edits(in, &s->cont, &e, &n, &cap);
+    if (*crcs < 0) {
+        free(e);
+        return -1;
+    }
+    *out = e;
+    *n_out = n;
+    return 0;
 fail:
     free(l);
-    free(pb);
+    free(e);
     return -1;
+}
+
+/* -o: one sequential pass, edits applied on the way */
+static int write_copy(FILE *in, const char *out, const Av1fgEdit *e, size_t n)
+{
+    FILE *o = fopen(out, "wb");
+    if (!o)
+        return -1;
+    const size_t bs = 1 << 22;
+    uint8_t *buf = malloc(bs);
+    int ret = buf ? 0 : -1;
+    int64_t off = 0;
+    size_t j = 0;
+    if (!ret && fseek64(in, 0, SEEK_SET))
+        ret = -1;
+    while (!ret) {
+        const size_t got = fread(buf, 1, bs, in);
+        for (; j < n && e[j].off < off + (int64_t)got; j++) {
+            uint8_t *p = buf + (e[j].off - off);
+            if (*p != e[j].old) {
+                ret = -1;
+                break;
+            }
+            *p = e[j].val;
+        }
+        if (got && fwrite(buf, 1, got, o) != got)
+            ret = -1;
+        off += (int64_t)got;
+        if (got < bs) {
+            if (ferror(in))
+                ret = -1;
+            break;
+        }
+    }
+    if (!ret && j != n)
+        ret = -1;
+    free(buf);
+    if (fclose(o))
+        ret = -1;
+    return ret;
+}
+
+/* --in-place: write the runs of edited bytes */
+static int write_in_place(FILE *f, const Av1fgEdit *e, size_t n)
+{
+    uint8_t run[64];
+    for (size_t i = 0; i < n;) {
+        size_t k = 0;
+        const int64_t start = e[i].off;
+        while (i < n && k < sizeof(run) && e[i].off == start + (int64_t)k)
+            run[k++] = e[i++].val;
+        if (fseek64(f, start, SEEK_SET) || fwrite(run, 1, k, f) != k)
+            return -1;
+    }
+    return fflush(f) ? -1 : 0;
 }
 
 /* re-parse the written file: same structure, the planned seeds, the same
@@ -326,7 +326,7 @@ static int parse_seed_list(const char *str, uint16_t **out, size_t *n)
 
 int main(int argc, char **argv)
 {
-    const char *in = NULL, *out = NULL, *set_seeds = NULL, *rank_all = NULL;
+    const char *in = NULL, *out = NULL, *set_seeds = NULL, *rank_all = NULL, *scores = NULL;
     int in_place = 0, analyze = 0, dump = 0, dump_display = 0, track = 0, strict = 0, do_verify = 1;
     Av1fgSeedOpts so;
     av1fg_seed_opts_default(&so);
@@ -349,6 +349,8 @@ int main(int argc, char **argv)
             so.candidates = atoi(NEXT());
         } else if (!strcmp(a, "--threads")) {
             so.threads = atoi(NEXT());
+        } else if (!strcmp(a, "--scores")) {
+            scores = NEXT();
         } else if (!strcmp(a, "--rank-all")) {
             rank_all = NEXT();
         } else if (!strcmp(a, "--bad")) {
@@ -387,12 +389,16 @@ int main(int argc, char **argv)
         fprintf(stderr, "use either -o or --in-place\n");
         return 2;
     }
+    if (out && same_file(in, out)) {
+        fprintf(stderr, "-o names the input file; use --in-place to patch it\n");
+        return 2;
+    }
     if (so.candidates < 1 || so.candidates > 256 || so.bad_pct <= 0 || so.bad_pct >= 100 || so.threads < 0) {
         fprintf(stderr, "--candidates / --bad / --threads out of range\n");
         return 2;
     }
     const int write = out || in_place;
-    if (!write && !dump && !dump_display)
+    if (!write && !dump && !dump_display && !scores)
         analyze = 1;
 
     const double t0 = now_s();
@@ -454,7 +460,7 @@ int main(int argc, char **argv)
     int ret = 0;
     Av1fgSeedReport rep;
     memset(&rep, 0, sizeof(rep));
-    if (analyze || write) {
+    if (analyze || write || scores) {
         uint16_t *list = NULL;
         size_t nlist = 0;
         if (set_seeds && parse_seed_list(set_seeds, &list, &nlist) < 0) {
@@ -470,6 +476,23 @@ int main(int argc, char **argv)
             return 1;
         }
         free(list);
+        if (scores) {
+            FILE *so_f = fopen(scores, "w");
+            if (!so_f) {
+                fprintf(stderr, "error: %s: %s\n", scores, strerror(errno));
+            } else {
+                fprintf(so_f, "display\tdecode\tseed\tpercentile\tbadness\tnew_seed\tnew_percentile\tnew_badness\n");
+                for (size_t d = 0; d < s.n_display; d++) {
+                    const Av1fgFrame *fr = &s.frames[s.display[d]];
+                    const Av1fgFrameScore *fs = &rep.fs[s.display[d]];
+                    if (fr->display_idx != (int64_t)d || fs->set < 0)
+                        continue;
+                    fprintf(so_f, "%zu\t%lld\t%u\t%.1f\t%.3f\t%u\t%.1f\t%.3f\n", d, (long long)fr->decode_idx, fr->seed,
+                            fs->p_old, fs->b_old >= 1e8f ? 999.0 : fs->b_old, fr->new_seed, fs->p_new, fs->b_new);
+                }
+                fclose(so_f);
+            }
+        }
         if (!quiet || analyze)
             av1fg_print_report(analyze ? stdout : stderr, &s, &so, &rep, write);
         msg("seed scoring: %.2f s\n", now_s() - t1);
@@ -477,35 +500,31 @@ int main(int argc, char **argv)
     }
     if (write) {
         const char *target = in_place ? in : out;
-        if (!in_place) {
-            const double t2 = now_s();
-            if (copy_file(in, out) < 0) {
-                fprintf(stderr, "error: cannot copy %s to %s: %s\n", in, out, strerror(errno));
-                av1fg_scan_free(&s);
-                return 1;
-            }
-            msg("copied in %.2f s\n", now_s() - t2);
-        }
-        FILE *w = fopen(target, "r+b");
-        if (!w) {
-            fprintf(stderr, "error: %s: %s\n", target, strerror(errno));
+        const double t2 = now_s();
+        FILE *fi = fopen(in, in_place ? "r+b" : "rb");
+        if (!fi) {
+            fprintf(stderr, "error: %s: %s\n", in, strerror(errno));
             av1fg_scan_free(&s);
             return 1;
         }
-        int64_t *pb = NULL;
-        size_t npb = 0;
-        const int64_t nw = apply_patches(w, &s, &pb, &npb);
+        Av1fgEdit *edits = NULL;
+        size_t nedits = 0;
+        int64_t nw = 0;
         int ncrc = 0;
-        if (nw >= 0)
-            ncrc = av1fg_fix_crcs(w, &s.cont, pb, npb);
-        free(pb);
-        if (fclose(w) || nw < 0 || ncrc < 0) {
+        int wr = build_edits(fi, &s, &edits, &nedits, &nw, &ncrc);
+        if (!wr)
+            wr = in_place ? write_in_place(fi, edits, nedits) : write_copy(fi, out, edits, nedits);
+        free(edits);
+        if (fclose(fi) || wr < 0) {
             fprintf(stderr, "error: writing %s failed%s\n", target, in_place ? " (the input may be partly patched)" : "");
             av1fg_scan_free(&s);
             return 1;
         }
-        msg("%s: wrote %lld seed fields%s%s\n", target, (long long)nw, ncrc ? ", updated CRC-32 elements: " : "",
-            ncrc ? "yes" : "");
+        msg("written in %.2f s\n", now_s() - t2);
+        msg("%s: wrote %lld seed fields (%zu bytes)", target, (long long)nw, nedits);
+        if (ncrc)
+            msg(", updated %d CRC-32 elements", ncrc);
+        msg("\n");
         if (do_verify) {
             if (verify(target, track, &s) < 0) {
                 fprintf(stderr, "error: verification of %s failed\n", target);

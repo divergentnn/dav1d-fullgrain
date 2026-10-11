@@ -63,11 +63,18 @@ const char *av1fg_format_name(Av1fgFormat fmt);
 int av1fg_container_open(FILE *f, int track, Av1fgContainer *c, char *err, size_t errlen);
 void av1fg_container_free(Av1fgContainer *c);
 
-/* Recompute the CRC-32 elements that cover any of the patched byte offsets
- * (sorted ascending) in the file opened for update. Returns the number
- * rewritten, or -1. */
-int av1fg_fix_crcs(FILE *f, const Av1fgContainer *c, const int64_t *patched, size_t n_patched);
+/* One byte of the file that changes. */
+typedef struct Av1fgEdit {
+    int64_t off;
+    uint8_t old, val;
+} Av1fgEdit;
 
-uint32_t av1fg_crc32(uint32_t crc, const uint8_t *buf, size_t len);
+/* Add the edits of the CRC-32 elements that cover edited bytes. CRC-32 is
+ * linear, so the new values follow from the old CRC and the byte changes
+ * alone, without reading the covered data (zero-byte shift operators as in
+ * zlib's crc32_combine); nested CRCs are updated innermost first. *edits is
+ * sorted by offset on return. f: the input. Returns the number of CRC-32
+ * elements changed, or -1. */
+int av1fg_crc_edits(FILE *f, const Av1fgContainer *c, Av1fgEdit **edits, size_t *n, size_t *cap);
 
 #endif

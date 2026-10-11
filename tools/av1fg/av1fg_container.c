@@ -1052,95 +1052,126 @@ int av1fg_container_open(FILE *f, int track, Av1fgContainer *c, char *err, size_
     return r < 0 ? -1 : 0;
 }
 
-/* ---------------- CRC-32 (IEEE, as zlib / EBML) ---------------- */
+/* ---------------- CRC-32 elements (IEEE CRC-32, as zlib / EBML) ---------------- */
 
-uint32_t av1fg_crc32(uint32_t crc, const uint8_t *buf, size_t len)
+static int cmp_edit(const void *a, const void *b)
 {
-    static uint32_t table[256];
+    const Av1fgEdit *x = a, *y = b;
+    return x->off < y->off ? -1 : x->off > y->off;
+}
+
+static uint32_t gf2_times(const uint32_t *mat, uint32_t vec)
+{
+    uint32_t sum = 0;
+    while (vec) {
+        if (vec & 1)
+            sum ^= *mat;
+        vec >>= 1;
+        mat++;
+    }
+    return sum;
+}
+
+static void gf2_square(uint32_t *sq, const uint32_t *mat)
+{
+    for (int n = 0; n < 32; n++)
+        sq[n] = gf2_times(mat, mat[n]);
+}
+
+/* the CRC register after len more zero bytes */
+static uint32_t crc_shift(uint32_t crc, uint64_t len)
+{
+    static uint32_t op[64][32];
     static int init;
     if (!init) {
-        for (uint32_t i = 0; i < 256; i++) {
-            uint32_t c = i;
-            for (int k = 0; k < 8; k++)
-                c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
-            table[i] = c;
+        uint32_t odd[32], even[32], row = 1;
+        odd[0] = 0xEDB88320u; /* one zero bit */
+        for (int n = 1; n < 32; n++) {
+            odd[n] = row;
+            row <<= 1;
         }
+        gf2_square(even, odd); /* 2 bits */
+        gf2_square(odd, even); /* 4 bits */
+        gf2_square(op[0], odd); /* 8 bits: one byte */
+        for (int k = 1; k < 64; k++)
+            gf2_square(op[k], op[k - 1]);
         init = 1;
     }
-    crc = ~crc;
-    for (size_t i = 0; i < len; i++)
-        crc = table[(crc ^ buf[i]) & 0xff] ^ (crc >> 8);
-    return ~crc;
+    for (int k = 0; len; k++, len >>= 1)
+        if (len & 1)
+            crc = gf2_times(op[k], crc);
+    return crc;
 }
 
-static int cmp_i64(const void *a, const void *b)
+int av1fg_crc_edits(FILE *f, const Av1fgContainer *c, Av1fgEdit **edits, size_t *n, size_t *cap)
 {
-    const int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
-    return x < y ? -1 : x > y;
-}
-
-static int any_in(const int64_t *v, size_t n, int64_t lo, int64_t hi)
-{
-    size_t a = 0, b = n;
-    while (a < b) {
-        const size_t mid = (a + b) / 2;
-        if (v[mid] < lo)
-            a = mid + 1;
-        else
-            b = mid;
-    }
-    return a < n && v[a] < hi;
-}
-
-int av1fg_fix_crcs(FILE *f, const Av1fgContainer *c, const int64_t *patched, size_t n_patched)
-{
-    if (!c->n_crcs || !n_patched)
+    qsort(*edits, *n, sizeof(**edits), cmp_edit);
+    if (!c->n_crcs || !*n)
         return 0;
-    int64_t *mod = malloc((n_patched + c->n_crcs * 4) * sizeof(*mod));
-    uint8_t *buf = malloc(1 << 20);
-    if (!mod || !buf) {
-        free(mod);
-        free(buf);
-        return -1;
+    uint32_t table[256];
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t v = i;
+        for (int k = 0; k < 8; k++)
+            v = v & 1 ? 0xEDB88320u ^ (v >> 1) : v >> 1;
+        table[i] = v;
     }
-    size_t nm = n_patched;
-    memcpy(mod, patched, n_patched * sizeof(*mod));
-    qsort(mod, nm, sizeof(*mod), cmp_i64);
-    int maxd = 0, fixed = 0;
+    int maxd = 0, changed = 0;
     for (size_t i = 0; i < c->n_crcs; i++)
         if (c->crcs[i].depth > maxd)
             maxd = c->crcs[i].depth;
     for (int d = maxd; d >= 0; d--) {
-        const size_t nm0 = nm;
+        const size_t n0 = *n;
         for (size_t i = 0; i < c->n_crcs; i++) {
             const Av1fgCrc *k = &c->crcs[i];
-            if (k->depth != d || !any_in(mod, nm0, k->start, k->end))
+            if (k->depth != d)
                 continue;
-            uint32_t crc = 0;
-            for (int64_t o = k->start; o < k->end;) {
-                const size_t want = (size_t)(k->end - o < (1 << 20) ? k->end - o : (1 << 20));
-                if (av1fg_read_at(f, o, buf, want) != want) {
-                    free(mod);
-                    free(buf);
-                    return -1;
+            /* first edit at or after k->start */
+            size_t lo = 0, hi = n0;
+            while (lo < hi) {
+                const size_t mid = (lo + hi) / 2;
+                if ((*edits)[mid].off < k->start)
+                    lo = mid + 1;
+                else
+                    hi = mid;
+            }
+            if (lo >= n0 || (*edits)[lo].off >= k->end)
+                continue;
+            uint32_t delta = 0;
+            for (size_t j = lo; j < n0 && (*edits)[j].off < k->end;) {
+                uint32_t raw = 0;
+                int64_t last = (*edits)[j].off - 1;
+                while (j < n0 && (*edits)[j].off == last + 1 && (*edits)[j].off < k->end) {
+                    raw = (raw >> 8) ^ table[(raw ^ ((*edits)[j].old ^ (*edits)[j].val)) & 0xff];
+                    last = (*edits)[j].off;
+                    j++;
                 }
-                crc = av1fg_crc32(crc, buf, want);
-                o += (int64_t)want;
+                delta ^= crc_shift(raw, (uint64_t)(k->end - last - 1));
             }
-            const uint8_t le[4] = { (uint8_t)crc, (uint8_t)(crc >> 8), (uint8_t)(crc >> 16), (uint8_t)(crc >> 24) };
-            if (fseek64(f, k->crc_off, SEEK_SET) || fwrite(le, 1, 4, f) != 4) {
-                free(mod);
-                free(buf);
+            uint8_t b[4];
+            if (av1fg_read_at(f, k->crc_off, b, 4) != 4)
                 return -1;
+            const uint32_t old = rl32(b), nw = old ^ delta;
+            if (old == nw)
+                continue;
+            for (int q = 0; q < 4; q++) {
+                const uint8_t ob = (uint8_t)(old >> (8 * q)), nb = (uint8_t)(nw >> (8 * q));
+                if (ob == nb)
+                    continue;
+                if (*n == *cap) {
+                    const size_t nc = *cap ? *cap * 2 : 1024;
+                    Av1fgEdit *e = realloc(*edits, nc * sizeof(*e));
+                    if (!e)
+                        return -1;
+                    *edits = e;
+                    *cap = nc;
+                }
+                (*edits)[(*n)++] = (Av1fgEdit){ k->crc_off + q, ob, nb };
             }
-            fflush(f);
-            for (int b = 0; b < 4; b++)
-                mod[nm++] = k->crc_off + b;
-            fixed++;
+            changed++;
         }
-        qsort(mod, nm, sizeof(*mod), cmp_i64);
+        if (*n != n0)
+            qsort(*edits, *n, sizeof(**edits), cmp_edit);
     }
-    free(mod);
-    free(buf);
-    return fixed;
+    return changed;
 }
+
