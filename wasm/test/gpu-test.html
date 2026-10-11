@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU grain check</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fff; --fg: #111; --ok: #0a7a2f; --bad: #b3261e; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #ddd; --ok: #5cd27a; --bad: #ff7b6e; } }
+  body { background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; margin: 16px; }
+  pre { white-space: pre-wrap; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<h1>GPU grain check</h1>
+<p>Applies the grain from each vector's PARAMS.json to its grain-free pictures with WebGPU and compares every
+picture with dav1d's (SHA-256). Query: <code>?vec=URL-of-vector-dir&amp;mode=full|standard&amp;pp=high-performance|low-power&amp;only=name&amp;frames=N&amp;reps=N</code></p>
+<pre id="log"></pre>
+<script type="module">
+import { createGpuGrain, gpuSupport } from '../web/gpu-grain.mjs';
+import { loadParams } from '../web/fg-params.mjs';
+
+const q = new URLSearchParams(location.search);
+const vec = (q.get('vec') || '../vec').replace(/\/$/, '');
+const modes = (q.get('mode') || 'full').split(',');
+const pp = q.get('pp') || 'high-performance';
+const only = q.get('only'), maxFrames = +(q.get('frames') || 0), reps = +(q.get('reps') || 3);
+const logEl = document.getElementById('log');
+const log = (s, cls) => { const e = document.createElement('span'); if (cls) e.className = cls; e.textContent = s + '\n'; logEl.append(e); console.log(s); };
+const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
+const med = a => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : NaN; };
+window.results = { done: false, fail: 0, pass: 0, vectors: [] };
+
+(async () => {
+  const why = await gpuSupport(pp);
+  if (why.length) { log('WebGPU unavailable: ' + why.join(', '), 'bad'); window.results.error = why.join(', '); window.results.done = true; return; }
+  const gg = await createGpuGrain({ powerPreference: pp });
+  const info = gg.info;
+  log(`adapter: ${info.vendor} ${info.architecture} ${info.description || ''} timestamps=${gg.timestamps}`);
+  window.results.adapter = info.vendor + ' ' + info.architecture;
+  const vectors = await (await fetch(vec + '/vectors.json')).json();
+  for (const v of vectors) {
+    if (only && !only.split(',').includes(v.name)) continue;
+    const params = loadParams(await (await fetch(vec + '/' + v.params)).text());
+    gg.configure({ width: v.width, height: v.height, bitdepth: v.bitdepth, layout: v.layout, mtrx: params.mtrx });
+    const bps = v.bitdepth > 8 ? 2 : 1, ssx = v.layout === 1 || v.layout === 2 ? 1 : 0, ssy = v.layout === 1 ? 1 : 0;
+    const cw = (v.width + ssx) >> ssx, ch = (v.height + ssy) >> ssy, ysz = v.width * v.height * bps;
+    const planes = [{ offset: 0, stride: v.width * bps }, { offset: ysz, stride: cw * bps }, { offset: ysz + cw * ch * bps, stride: cw * bps }];
+    const n = maxFrames ? Math.min(maxFrames, v.frames) : v.frames;
+    for (const mode of modes) {
+      const r = { name: v.name, mode, frames: n, bad: [], gpu: [], wall: [] };
+      for (let i = 0; i < n; i++) {
+        const res = await fetch(vec + '/' + v.yuv, { headers: { Range: `bytes=${i * v.frameBytes}-${(i + 1) * v.frameBytes - 1}` } });
+        const bytes = await res.arrayBuffer();
+        if (bytes.byteLength !== v.frameBytes) throw new Error(`${v.name} frame ${i}: got ${bytes.byteLength} bytes`);
+        gg.upload(bytes, planes, bps);
+        gg.setGrain(params.picture(i), mode);
+        const repHashes = new Set();
+        for (let k = 0; k < reps; k++) {           // the first run includes pipeline warm-up
+          const t0 = performance.now();
+          const t = await gg.run();
+          r.wall.push(performance.now() - t0);
+          if (t) r.gpu.push(t.arLuma + t.arChroma + t.applyY + t.applyC), r.last = t;
+          if (q.get('repcheck')) repHashes.add(hex(await crypto.subtle.digest('SHA-256', await gg.readPacked())));
+        }
+        if (repHashes.size > 1) log(`  frame ${i}: ${repHashes.size} different results in ${reps} runs`, 'bad');
+        const out = await gg.readPacked();
+        const h = hex(await crypto.subtle.digest('SHA-256', out));
+        const want = v[mode === 'full' ? 'full' : 'standard'][i];
+        if (h !== want) {
+          r.bad.push(i);
+          if (q.get('dump') && !window.results.dump) {            // the first mismatch, for analysis
+            let b = ''; for (let k = 0; k < out.length; k += 0x8000) b += String.fromCharCode.apply(null, out.subarray(k, k + 0x8000));
+            window.results.dump = { name: v.name, mode, frame: i, b64: btoa(b) };
+          }
+        }
+      }
+      if (+q.get('bench')) {                       // back-to-back throughput on the last picture
+        const N = +q.get("bench");
+        await gg.run();
+        const t0 = performance.now();
+        for (let k = 0; k < N; k++) { const e = gg.device.createCommandEncoder(); gg.encode(e); gg.device.queue.submit([e.finish()]); }
+        await gg.device.queue.onSubmittedWorkDone();
+        r.bench = (performance.now() - t0) / N;
+        const t = await gg.run();
+        if (t) r.last = t;
+      }
+      const ok = !r.bad.length;
+      window.results[ok ? 'pass' : 'fail']++;
+      const t = r.last ? ` gpu median ${med(r.gpu).toFixed(2)} ms (AR luma ${r.last.arLuma.toFixed(2)}, chroma ${r.last.arChroma.toFixed(2)}, apply ${(r.last.applyY + r.last.applyC).toFixed(2)})` : '';
+      log(`${ok ? 'ok  ' : 'FAIL'} ${v.name} ${v.width}x${v.height} ${v.bitdepth}-bit ${mode}: ${n - r.bad.length}/${n} pictures identical to dav1d;` +
+          ` wall median ${med(r.wall).toFixed(2)} ms;${t}` + (r.bench ? `; back-to-back ${r.bench.toFixed(2)} ms/picture` : '') +
+          (ok ? '' : ` mismatches: ${r.bad.slice(0, 10).join(',')}`), ok ? 'ok' : 'bad');
+      window.results.vectors.push({ name: v.name, mode, frames: n, bad: r.bad, gpuMs: med(r.gpu), wallMs: med(r.wall), last: r.last, benchMs: r.bench });
+    }
+  }
+  window.results.done = true;
+  log(`done: ${window.results.pass} passed, ${window.results.fail} failed`);
+})().catch(e => { log('error: ' + (e.stack || e), 'bad'); window.results.error = String(e); window.results.done = true; });
+</script>
+</body>
+</html>

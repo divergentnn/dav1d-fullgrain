@@ -119,3 +119,15 @@ dav1d = executable('dav1d',
         ],
     install : true,
 )
+
+# av1-fullgrain: grain-free stream + grain parameters (tools/av1grain.c). It
+# includes src/internal.h for the parser hook, so it is built against this
+# library only.
+av1grain = executable('av1grain',
+    files('av1grain.c'),
+
+    link_with : [libdav1d],
+    include_directories : [dav1d_inc_dirs],
+    dependencies : [thread_dependency],
+    install : false,
+)

@@ -414,6 +414,7 @@ static int parse_frame_hdr(Dav1dContext *const c, GetBits *const gb) {
 #endif
     const Dav1dSequenceHeader *const seqhdr = c->seq_hdr;
     Dav1dFrameHeader *const hdr = c->frame_hdr;
+    c->fg_hook.fg_bitpos = -1;
 
     if (!seqhdr->reduced_still_picture_header)
         hdr->show_existing_frame = dav1d_get_bit(gb);
@@ -1063,6 +1064,7 @@ static int parse_frame_hdr(Dav1dContext *const c, GetBits *const gb) {
 #endif
 
     if (seqhdr->film_grain_present && (hdr->show_frame || hdr->showable_frame)) {
+        c->fg_hook.fg_bitpos = (int) dav1d_get_bits_pos(gb);
         hdr->film_grain.present = dav1d_get_bit(gb);
         if (hdr->film_grain.present) {
             const unsigned seed = dav1d_get_bits(gb, 16);
@@ -1284,6 +1286,9 @@ ptrdiff_t dav1d_parse_obus(Dav1dContext *const c, Dav1dData *const in) {
             c->frame_hdr = NULL;
             goto error;
         }
+        if (c->fg_hook.cb)
+            c->fg_hook.cb(c->fg_hook.cookie, in->data, type, c->fg_hook.fg_bitpos,
+                          (int) dav1d_get_bits_pos(&gb));
         for (int n = 0; n < c->n_tile_data; n++)
             dav1d_data_unref_internal(&c->tile[n].data);
         c->n_tile_data = 0;

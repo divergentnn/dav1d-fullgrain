@@ -1,8 +1,11 @@
 #!/bin/sh
-# Build dav1d-fullgrain for WebAssembly (SIMD128 + threads).
+# Build av1-fullgrain's browser kit (WebAssembly SIMD128 + threads).
 #
-#   wasm/build.sh                 -> wasm/dist/dav1d-fg.mjs + dav1d-fg.wasm (ES module for a Worker)
-#                                    and wasm/dist/web/ (decoder + worker + player + demo page)
+#   wasm/build.sh                 -> wasm/dist/web/: the player kit. The browser decodes the grain-free AV1
+#                                    (WebCodecs) and the grain is drawn with WebGPU (gpu-grain.mjs) or, without
+#                                    WebGPU, by fg-grain.wasm: the fork's grain code alone, no decoder
+#   DECODER=1 wasm/build.sh       -> also wasm/dist/dav1d-fg.mjs + .wasm, the whole decoder (the old WASM player,
+#                                    no longer used by the kit)
 #   NODE_CLI=1 wasm/build.sh      -> also wasm/dist/node/dav1d.js, the dav1d CLI for Node.js
 #                                    (sh tests/fullgrain/run.sh wasm/dist/node/dav1d-node)
 #
@@ -59,7 +62,22 @@ if [ ! -f "$BUILD/lib/build.ninja" ]; then
 fi
 ninja -C "$BUILD/lib" -j "$JOBS"
 
-# 2. the JS module: djs.c + libdav1d.a
+# 2. the grain module: fgjs.c + the grain objects of libdav1d.a (the linker leaves the decoder out)
+GFUNCS='_fgjs_open,_fgjs_threads,_fgjs_alloc,_fgjs_free,_fgjs_apply,_fgjs_close,_malloc,_free'
+emcc -O3 -msimd128 -pthread "$HERE/fgjs.c" "$BUILD/lib/src/libdav1d.a" \
+    -I "$SRC" -I "$SRC/include" -I "$BUILD/lib" -I "$BUILD/lib/include" -I "$BUILD/lib/include/dav1d" \
+    -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createGrain \
+    -sENVIRONMENT=web,worker,node \
+    -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=64MB -sMAXIMUM_MEMORY=2GB \
+    -sPTHREAD_POOL_SIZE=8 -sSTACK_SIZE=1MB -sDEFAULT_PTHREAD_STACK_SIZE=1MB \
+    -sEXPORTED_FUNCTIONS="$GFUNCS" \
+    -sEXPORTED_RUNTIME_METHODS=HEAPU8,wasmMemory \
+    -Wno-pthreads-mem-growth \
+    -o "$OUT/fg-grain.mjs"
+ls -l "$OUT"/fg-grain.*
+
+# 2b. optional: the whole decoder (djs.c + libdav1d.a), the old WASM player
+if [ "${DECODER:-0}" = 1 ]; then
 FUNCS='_djs_open,_djs_send,_djs_drain,_djs_queued,_djs_pop,_djs_w,_djs_h,_djs_bpc,_djs_layout,_djs_stride,_djs_plane,_djs_grain,_djs_mtrx,_djs_trc,_djs_pri,_djs_full_range,_djs_flush,_djs_close,_malloc,_free'
 emcc -O3 -msimd128 -pthread "$HERE/djs.c" "$BUILD/lib/src/libdav1d.a" \
     -I "$SRC/include" -I "$BUILD/lib/include" -I "$BUILD/lib/include/dav1d" \
@@ -72,12 +90,11 @@ emcc -O3 -msimd128 -pthread "$HERE/djs.c" "$BUILD/lib/src/libdav1d.a" \
     -Wno-pthreads-mem-growth \
     -o "$OUT/dav1d-fg.mjs"
 ls -l "$OUT"/dav1d-fg.*
+fi
 
-# 3. the player kit, flat in one directory (the worker imports its siblings)
+# 3. the player kit, flat in one directory
 mkdir -p "$OUT/web"
-cp "$OUT/dav1d-fg.mjs" "$OUT/dav1d-fg.wasm" "$HERE/web/dav1d-worker.mjs" "$HERE/web/wasm-clip.mjs" \
-   "$HERE/web/demo.html" "$HERE"/web/vendor/mp4box/*.mjs "$OUT/web/"
-cp "$HERE/web/vendor/mp4box/LICENSE" "$OUT/web/mp4box.LICENSE"
+cp "$OUT/fg-grain.mjs" "$OUT/fg-grain.wasm" "$HERE"/web/*.mjs "$HERE/web/demo.html" "$OUT/web/"
 echo "player kit: $OUT/web (python3 $HERE/web/serve.py, then /demo.html)"
 
 # 4. optional: the dav1d CLI for Node.js (runs tests/fullgrain/run.sh)

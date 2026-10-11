@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebCodecs grain check</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fff; --fg: #111; --ok: #0a7a2f; --bad: #b3261e; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #ddd; --ok: #5cd27a; --bad: #ff7b6e; } }
+  body { background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; margin: 16px; }
+  pre { white-space: pre-wrap; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<h1>WebCodecs grain check</h1>
+<p>Decodes each vector's grain-free MP4 with the browser's own AV1 decoder (WebCodecs), checks the pictures against
+dav1d (grain off), applies the grain on the GPU and checks again (full-frame grain). Also decodes the original MP4 to
+see which grain, if any, the browser applies itself. Query: <code>?vec=URL&amp;hw=no-preference|prefer-hardware|prefer-software&amp;only=name</code></p>
+<pre id="log"></pre>
+<script type="module">
+import { demuxAv1 } from '../web/mp4-demux.mjs';
+import { createGpuGrain, gpuSupport } from '../web/gpu-grain.mjs';
+import { loadParams } from '../web/fg-params.mjs';
+
+const q = new URLSearchParams(location.search);
+const vec = (q.get('vec') || '../vec').replace(/\/$/, '');
+const hw = q.get('hw') || 'no-preference', only = q.get('only'), mode = q.get('mode') || 'full';
+const logEl = document.getElementById('log');
+const log = (s, cls) => { const e = document.createElement('span'); if (cls) e.className = cls; e.textContent = s + '\n'; logEl.append(e); console.log(s); };
+const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
+const sha = async b => hex(await crypto.subtle.digest('SHA-256', b));
+window.results = { done: false, fail: 0, pass: 0, vectors: [] };
+
+// decode every sample; onFrame(frame, index) may be async (awaited in order); -> wall ms
+async function decodeAll(d, accel, onFrame) {
+  const frames = [];
+  let err = null;
+  const dec = new VideoDecoder({ output: f => frames.push(f), error: e => { err = e; } });
+  dec.configure({ codec: d.codec, codedWidth: d.width, codedHeight: d.height, hardwareAcceleration: accel,
+                  description: undefined });
+  const t0 = performance.now();
+  let done = 0;
+  const drain = async () => { while (frames.length) { const f = frames.shift(); await onFrame(f, done++); } };
+  for (const s of d.samples) {
+    dec.decode(new EncodedVideoChunk({ type: s.sync ? 'key' : 'delta', timestamp: Math.round(s.cts * 1e6 / d.timescale),
+      duration: Math.round(s.dur * 1e6 / d.timescale), data: d.bytes.subarray(s.offset, s.offset + s.size) }));
+    while (dec.decodeQueueSize > 8) { await drain(); await new Promise(r => setTimeout(r, 0)); }
+    await drain();
+  }
+  await dec.flush();
+  await drain();
+  const ms = performance.now() - t0;
+  dec.close();
+  if (err) throw err;
+  return { ms, frames: done };
+}
+
+function layoutOf(f) {
+  const w = f.visibleRect.width, h = f.visibleRect.height, fmt = f.format;
+  const hbd = /P1[02]/.test(fmt), bps = hbd ? 2 : 1;
+  const ssx = /^I42[02]/.test(fmt) || fmt === 'NV12' ? 1 : 0, ssy = /^I420/.test(fmt) || fmt === 'NV12' ? 1 : 0;
+  const cw = (w + ssx) >> ssx, ch = (h + ssy) >> ssy;
+  if (fmt === 'NV12') return null;                     // semi-planar: not used by software decoders
+  const ysz = w * h * bps, csz = cw * ch * bps;
+  return { w, h, bps, layout: [{ offset: 0, stride: w * bps }, { offset: ysz, stride: cw * bps }, { offset: ysz + csz, stride: cw * bps }],
+           size: ysz + 2 * csz };
+}
+
+(async () => {
+  if (typeof VideoDecoder !== 'function') { log('no WebCodecs', 'bad'); window.results.error = 'no WebCodecs'; window.results.done = true; return; }
+  const why = await gpuSupport();
+  const gg = why.length ? null : await createGpuGrain();
+  log(`WebGPU: ${gg ? gg.info.vendor + ' ' + gg.info.architecture : why.join(', ')}`);
+  const vectors = await (await fetch(vec + '/vectors.json')).json();
+  for (const v of vectors) {
+    if (!v.nograinMp4 || (only && !only.split(',').includes(v.name))) continue;
+    const params = loadParams(await (await fetch(vec + '/' + v.params)).text());
+    const d = demuxAv1(await (await fetch(vec + '/' + v.nograinMp4)).arrayBuffer());
+    const r = { name: v.name, codec: d.codec };
+    const sup = {};
+    for (const a of ['no-preference', 'prefer-software', 'prefer-hardware'])
+      sup[a] = (await VideoDecoder.isConfigSupported({ codec: d.codec, codedWidth: d.width, codedHeight: d.height, hardwareAcceleration: a })).supported;
+    r.support = sup;
+    log(`${v.name}: ${d.width}x${d.height} ${d.codec}, ${d.samples.length} samples; isConfigSupported ${JSON.stringify(sup)}`);
+    // 1. speed: decode + copyTo only
+    let fmt = null, copyMs = 0, buf = null;
+    const sp = await decodeAll(d, hw, async (f, i) => {
+      if (!fmt) fmt = { format: f.format, coded: [f.codedWidth, f.codedHeight], visible: [f.visibleRect.width, f.visibleRect.height],
+                        colorSpace: f.colorSpace && f.colorSpace.toJSON() };
+      const L = layoutOf(f);
+      if (L) { buf = buf && buf.byteLength >= L.size ? buf : new ArrayBuffer(L.size); const t = performance.now(); await f.copyTo(buf, { layout: L.layout }); copyMs += performance.now() - t; }
+      f.close();
+    });
+    r.format = fmt;
+    r.decodeFps = sp.frames / sp.ms * 1000;
+    r.copyMs = copyMs / sp.frames;
+    log(`  frame format ${JSON.stringify(fmt)}`);
+    log(`  decode + copyTo: ${sp.frames} frames in ${sp.ms.toFixed(0)} ms = ${r.decodeFps.toFixed(1)} fps; copyTo ${r.copyMs.toFixed(2)} ms/frame`);
+    // 2. exactness: grain off vs dav1d, then GPU grain vs dav1d
+    let offOk = 0, fullOk = 0, n = 0, gpuMs = [];
+    if (gg) gg.configure({ width: v.width, height: v.height, bitdepth: v.bitdepth, layout: v.layout, mtrx: params.mtrx });
+    await decodeAll(d, hw, async (f, i) => {
+      const L = layoutOf(f);
+      if (L && i < v.frames) {
+        const b = new ArrayBuffer(L.size);
+        await f.copyTo(b, { layout: L.layout });
+        n++;
+        if (await sha(b) === v.off[i]) offOk++;
+        if (gg) {
+          gg.upload(b, L.layout, L.bps);
+          gg.setGrain(params.picture(i), mode);
+          const t = await gg.run();
+          if (t) gpuMs.push(t.arLuma + t.arChroma + t.applyY + t.applyC);
+          if (await sha(await gg.readPacked()) === v[mode][i]) fullOk++;
+        }
+      }
+      f.close();
+    });
+    r.offOk = offOk; r.fullOk = fullOk; r.checked = n;
+    const ok = n > 0 && offOk === n && (!gg || fullOk === n);
+    window.results[ok ? 'pass' : 'fail']++;
+    log(`  ${ok ? 'ok  ' : 'FAIL'} grain-free pictures identical to dav1d: ${offOk}/${n}` +
+        (gg ? `; with GPU ${mode} grain identical to dav1d ${mode}: ${fullOk}/${n}` : ''), ok ? 'ok' : 'bad');
+    // 3. the original (with grain) through the browser's own decoder: which grain does it apply?
+    if (v.mp4) {
+      const d0 = demuxAv1(await (await fetch(vec + '/' + v.mp4)).arrayBuffer());
+      const seen = { off: 0, standard: 0, full: 0, other: 0 };
+      await decodeAll(d0, hw, async (f, i) => {
+        const L = layoutOf(f);
+        if (L && i < v.frames) {
+          const b = new ArrayBuffer(L.size); await f.copyTo(b, { layout: L.layout });
+          const h = await sha(b);
+          seen[h === v.off[i] ? 'off' : h === v.standard[i] ? 'standard' : h === v.full[i] ? 'full' : 'other']++;
+        }
+        f.close();
+      });
+      r.original = seen;
+      log(`  the original through WebCodecs: ${JSON.stringify(seen)} (off = no grain applied, standard = AV1 grain as dav1d)`);
+    }
+    window.results.vectors.push(r);
+  }
+  window.results.done = true;
+  log(`done: ${window.results.pass} passed, ${window.results.fail} failed`);
+})().catch(e => { log('error: ' + (e.stack || e), 'bad'); window.results.error = String(e); window.results.done = true; });
+</script>
+</body>
+</html>
