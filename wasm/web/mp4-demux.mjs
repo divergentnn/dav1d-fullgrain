@@ -95,3 +95,76 @@ export function demuxAv1(buffer) {
   }
   return null;
 }
+
+/** film_grain_params_present from an AV1 sequence header OBU inside `obus` (e.g. av1C's configOBUs or a
+ *  sample): true / false, or null when there is no sequence header */
+export function av1SeqGrain(obus) {
+  let off = 0;
+  while (off < obus.length) {
+    const h = obus[off], type = (h >> 3) & 15, ext = (h >> 2) & 1, hasSize = (h >> 1) & 1;
+    let p = off + 1 + ext, size = obus.length - p;
+    if (hasSize) {
+      size = 0;
+      for (let i = 0; i < 8; i++) { const b = obus[p++]; size += (b & 0x7f) * 2 ** (7 * i); if (!(b & 0x80)) break; }
+    }
+    if (type === 1) return seqGrain(obus.subarray(p, p + size));
+    off = p + size;
+  }
+  return null;
+}
+
+function seqGrain(b) {
+  let pos = 0;
+  const f = n => { let v = 0; for (let i = 0; i < n; i++, pos++) v = v * 2 + ((b[pos >> 3] >> (7 - (pos & 7))) & 1); return v; };
+  const uvlc = () => { let z = 0; while (!f(1)) z++; return z >= 32 ? 2 ** 32 - 1 : f(z) + 2 ** z - 1; };
+  const profile = f(3); f(1); const reduced = f(1);
+  let decoderModel = false, bufferDelayLen = 0;
+  if (reduced) f(5);
+  else {
+    const timing = f(1);
+    if (timing) {
+      f(32); f(32); if (f(1)) uvlc();                                  // equal_picture_interval
+      decoderModel = !!f(1);
+      if (decoderModel) { bufferDelayLen = f(5) + 1; f(32); f(5); f(5); }
+    }
+    const initialDelay = f(1), n = f(5) + 1;
+    for (let i = 0; i < n; i++) {
+      f(12); const level = f(5); if (level > 7) f(1);
+      if (decoderModel && f(1)) { f(bufferDelayLen); f(bufferDelayLen); f(1); }
+      if (initialDelay && f(1)) f(4);
+    }
+  }
+  const wb = f(4) + 1, hb = f(4) + 1; f(wb); f(hb);
+  const frameIds = reduced ? 0 : f(1);
+  if (frameIds) { f(4); f(3); }
+  f(1); f(1); f(1);                                                     // 128x128 sb, filter intra, intra edge
+  if (!reduced) {
+    f(1); f(1); f(1); f(1);                                             // interintra, masked, warped, dual filter
+    const orderHint = f(1);
+    if (orderHint) { f(1); f(1); }                                      // jnt comp, ref frame mvs
+    const sct = f(1) ? 2 : f(1);                                        // seq_choose_screen_content_tools
+    if (sct > 0) { if (!f(1)) f(1); }                                   // seq_choose_integer_mv / seq_force_integer_mv
+    if (orderHint) f(3);
+  }
+  f(1); f(1); f(1);                                                     // superres, cdef, restoration
+  // color_config
+  const high = f(1);
+  const twelve = profile === 2 && high ? f(1) : 0;
+  const mono = profile === 1 ? 0 : f(1);
+  let cp = 2, tc = 2, mc = 2;
+  if (f(1)) { cp = f(8); tc = f(8); mc = f(8); }
+  if (mono) f(1);
+  else if (cp === 1 && tc === 13 && mc === 0) { /* sRGB: no more bits */ }
+  else {
+    f(1);                                                               // color_range
+    let ssx = 1, ssy = 1;
+    if (profile === 1) { ssx = ssy = 0; }
+    else if (profile === 2) {
+      ssx = 1; ssy = 0;
+      if (twelve) { ssx = f(1); ssy = ssx ? f(1) : 0; }
+    }
+    if (ssx && ssy) f(2);                                               // chroma_sample_position
+  }
+  if (!mono) f(1);                                                      // separate_uv_delta_q
+  return !!f(1);                                                        // film_grain_params_present
+}

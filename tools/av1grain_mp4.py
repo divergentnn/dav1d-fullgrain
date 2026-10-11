@@ -13,7 +13,8 @@ to the original in full-frame and standard grain, and with grain off (6 decodes)
 
 Exit status: 0 done; 3 the clip has no film grain (nothing written); 4 not an AV1 MP4 this tool can rewrite
 (fragmented, no AV1 track, ...); 1 any other failure. Needs the av1grain binary from this repository's build:
---av1grain, $AV1GRAIN or av1grain on $PATH. Python standard library only.
+--av1grain, $AV1GRAIN or av1grain on $PATH. Python standard library only; strip() is the same as a function
+(flipcomp's uploader vendors this file).
 
 Copyright (c) 2026, divergentnn (av1-fullgrain). SPDX-License-Identifier: BSD-2-Clause
 """
@@ -244,6 +245,59 @@ def md5_of_decode(exe, ivf, cfg, threads, *opts):
     return h.hexdigest()
 
 
+class Failed(Exception):
+    pass
+
+
+def strip(buf, exe, verify=False, threads=4, log=lambda s: print(s, file=sys.stderr)):
+    """the grain-free copy of an AV1 MP4 (bytes) -> (out bytes, params dict), or None when the clip has no film
+    grain. Raises Unsupported (not an AV1 MP4 this tool can rewrite) or Failed."""
+    top, tracks = parse(buf)
+    vt = video_track(tracks)
+    samples = [bytes(buf[o:o + n]) for o, n in vt.samples(buf)]
+    with tempfile.TemporaryDirectory(prefix="av1grain-") as td:
+        src_ivf, out_ivf, pj, cfg = (os.path.join(td, n) for n in ("in.ivf", "out.ivf", "p.json", "cfg.obu"))
+        write_ivf(src_ivf, samples)
+        config = vt.av1c_config(buf)
+        if config:
+            Path(cfg).write_bytes(config)
+        r = subprocess.run([exe, "strip", src_ivf, out_ivf, pj, "--threads", str(threads)] +
+                           (["--config", cfg] if config else []), capture_output=True, text=True)
+        if r.returncode:
+            raise Failed(f"strip failed: {r.stderr.strip()}")
+        log(r.stderr.strip())
+        params = json.loads(Path(pj).read_text())
+        if not params["sets"]:
+            return None
+        new = read_ivf(out_ivf)
+        if len(new) != len(samples) or params["frames"] != len(samples):
+            raise Failed(f"{len(samples)} samples, {len(new)} rewritten, {params['frames']} pictures")
+        out = rebuild(buf, top, tracks, vt, new)
+        # read the result back: the same AV1 samples, every other track's samples unchanged
+        top2, tracks2 = parse(out)
+        vt2 = video_track(tracks2)
+        if [bytes(out[o:o + n]) for o, n in vt2.samples(out)] != new:
+            raise Failed("the rewritten MP4 does not read back")
+        for t, t2 in zip(tracks, tracks2):
+            if t is not vt and [bytes(buf[o:o + n]) for o, n in t.samples(buf)] != [bytes(out[o:o + n]) for o, n in t2.samples(out)]:
+                raise Failed("another track changed")
+        if verify:
+            write_ivf(out_ivf, [bytes(out[o:o + n]) for o, n in vt2.samples(out)])
+            c = cfg if config else None
+            checks = [("grain off", md5_of_decode(exe, out_ivf, c, threads, "--grain", "off"),
+                       md5_of_decode(exe, src_ivf, c, threads, "--grain", "off"))]
+            for m in ("full", "standard"):
+                checks.append((f"{m} grain from the params", md5_of_decode(exe, out_ivf, c, threads, "--grain", m, "--params", pj),
+                               md5_of_decode(exe, src_ivf, c, threads, "--grain", m)))
+            for name, got, want in checks:
+                log(f"av1grain_mp4: verify {name}: {'ok' if got == want else 'FAILED'} ({got})")
+            if any(g != w for _, g, w in checks):
+                raise Failed("verification failed: the grain-free copy + params do not give the original's pictures")
+    params["source"] = {"bytes": len(buf), "sha256": hashlib.sha256(buf).hexdigest()}
+    params["nograin"] = {"bytes": len(out), "sha256": hashlib.sha256(out).hexdigest()}
+    return out, params
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("src")
@@ -256,65 +310,21 @@ def main():
     exe = tool(a)
     buf = Path(a.src).read_bytes()
     try:
-        top, tracks = parse(buf)
-        vt = video_track(tracks)
+        res = strip(buf, exe, a.verify, a.threads)
     except Unsupported as e:
         print(f"av1grain_mp4: {a.src}: {e}", file=sys.stderr)
         return 4
-    samples = [bytes(buf[o:o + n]) for o, n in vt.samples(buf)]
-    with tempfile.TemporaryDirectory(prefix="av1grain-") as td:
-        src_ivf, out_ivf, pj, cfg = (os.path.join(td, n) for n in ("in.ivf", "out.ivf", "p.json", "cfg.obu"))
-        write_ivf(src_ivf, samples)
-        config = vt.av1c_config(buf)
-        if config:
-            Path(cfg).write_bytes(config)
-        r = subprocess.run([exe, "strip", src_ivf, out_ivf, pj, "--threads", str(a.threads)] +
-                           (["--config", cfg] if config else []), capture_output=True, text=True)
-        if r.returncode:
-            print(f"av1grain_mp4: strip failed: {r.stderr.strip()}", file=sys.stderr)
-            return 1
-        print(r.stderr.strip(), file=sys.stderr)
-        params = json.loads(Path(pj).read_text())
-        if not params["sets"]:
-            print(f"av1grain_mp4: {a.src}: no film grain", file=sys.stderr)
-            return 3
-        new = read_ivf(out_ivf)
-        if len(new) != len(samples) or params["frames"] != len(samples):
-            print(f"av1grain_mp4: {len(samples)} samples, {len(new)} rewritten, {params['frames']} pictures", file=sys.stderr)
-            return 1
-        try:
-            out = rebuild(buf, top, tracks, vt, new)
-        except Unsupported as e:
-            print(f"av1grain_mp4: {a.src}: {e}", file=sys.stderr)
-            return 4
-        # read the result back: the same AV1 samples, every other track's samples unchanged
-        top2, tracks2 = parse(out)
-        vt2 = video_track(tracks2)
-        if [bytes(out[o:o + n]) for o, n in vt2.samples(out)] != new:
-            print("av1grain_mp4: the rewritten MP4 does not read back", file=sys.stderr)
-            return 1
-        for t, t2 in zip(tracks, tracks2):
-            if t is not vt and [bytes(buf[o:o + n]) for o, n in t.samples(buf)] != [bytes(out[o:o + n]) for o, n in t2.samples(out)]:
-                print("av1grain_mp4: another track changed", file=sys.stderr)
-                return 1
-        if a.verify:
-            write_ivf(out_ivf, [bytes(out[o:o + n]) for o, n in vt2.samples(out)])
-            c = cfg if config else None
-            checks = [("grain off", md5_of_decode(exe, out_ivf, c, a.threads, "--grain", "off"),
-                       md5_of_decode(exe, src_ivf, c, a.threads, "--grain", "off"))]
-            for m in ("full", "standard"):
-                checks.append((f"{m} grain from the params", md5_of_decode(exe, out_ivf, c, a.threads, "--grain", m, "--params", pj),
-                               md5_of_decode(exe, src_ivf, c, a.threads, "--grain", m)))
-            for name, got, want in checks:
-                print(f"av1grain_mp4: verify {name}: {'ok' if got == want else 'FAILED'} ({got})", file=sys.stderr)
-            if any(g != w for _, g, w in checks):
-                return 1
-        params["source"] = {"bytes": len(buf), "sha256": hashlib.sha256(buf).hexdigest()}
-        params["nograin"] = {"bytes": len(out), "sha256": hashlib.sha256(out).hexdigest()}
-        Path(a.out).write_bytes(out)
-        Path(a.params).write_text(json.dumps(params, separators=(",", ":")) + "\n")
-        print(f"av1grain_mp4: {a.out}: {len(buf)} -> {len(out)} bytes; {a.params}: {len(params['sets'])} set(s), "
-              f"{sum(g[0] >= 0 for g in params['grain'])}/{params['frames']} pictures with grain", file=sys.stderr)
+    except Failed as e:
+        print(f"av1grain_mp4: {a.src}: {e}", file=sys.stderr)
+        return 1
+    if res is None:
+        print(f"av1grain_mp4: {a.src}: no film grain", file=sys.stderr)
+        return 3
+    out, params = res
+    Path(a.out).write_bytes(out)
+    Path(a.params).write_text(json.dumps(params, separators=(",", ":")) + "\n")
+    print(f"av1grain_mp4: {a.out}: {len(buf)} -> {len(out)} bytes; {a.params}: {len(params['sets'])} set(s), "
+          f"{sum(g[0] >= 0 for g in params['grain'])}/{params['frames']} pictures with grain", file=sys.stderr)
     return 0
 
 

@@ -536,11 +536,35 @@ export class GpuGrain {
     this.layoutPlanes(planes, bps, semi);
   }
 
-  /** a mapped GPU buffer of `bytes` for the decoder to copy a picture into: -> {buffer, range (ArrayBuffer)};
-   *  unmap() it, then setSource() */
-  sourceBuffer(bytes) {
-    const buffer = this.device.createBuffer({ size: align(bytes, 4), usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });
-    return { buffer, range: buffer.getMappedRange() };
+  /** a decoded VideoFrame -> a GPU buffer holding its planes (for setSource()), through a pool of mappable staging
+   *  buffers and a GPU copy: a new mappedAtCreation buffer per frame is 3x slower in Chrome (fresh shared memory).
+   *  Give the buffer back with releaseFrame() when it is no longer drawn. */
+  async frameBuffer(frame, layout) {
+    const dev = this.device, size = align(layout.size, 4);
+    if (this.poolSize !== size) {                  // a new frame size: start new pools
+      for (const b of this.stageFree || []) b.destroy();
+      for (const b of this.frameFree || []) b.destroy();
+      this.stageFree = []; this.frameFree = []; this.poolSize = size;
+    }
+    let st = this.stageFree.pop();
+    if (st) await st.mapAsync(GPUMapMode.WRITE);
+    else st = dev.createBuffer({ size, usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC, mappedAtCreation: true });
+    try { await frame.copyTo(st.getMappedRange(), { layout: layout.planes }); } finally { st.unmap(); }
+    const fb = this.frameFree.pop() || dev.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const enc = dev.createCommandEncoder();
+    enc.copyBufferToBuffer(st, 0, fb, 0, size);
+    dev.queue.submit([enc.finish()]);
+    const pools = this.stageFree;
+    dev.queue.onSubmittedWorkDone().then(() => { if (this.stageFree === pools && pools.length < 4) pools.push(st); else st.destroy(); });
+    return fb;
+  }
+
+  /** a frameBuffer() that is no longer needed: reused once the GPU is done with it */
+  releaseFrame(fb) {
+    const pools = this.frameFree;
+    this.device.queue.onSubmittedWorkDone().then(() => {
+      if (this.frameFree === pools && fb.size === this.poolSize && pools.length < 8) pools.push(fb); else fb.destroy();
+    });
   }
 
   layoutPlanes(planes, bps, semi) {

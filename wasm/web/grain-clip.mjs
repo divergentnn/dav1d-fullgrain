@@ -145,7 +145,7 @@ export async function createGrainClip(buffer, params, opts = {}) {
       if (far < 0) break;
       const old = cache.get(far);
       cache.delete(far);
-      if (old.gpu) { const b = old.gpu; drawing.then(() => gg.device.queue.onSubmittedWorkDone()).then(() => b.destroy()); }
+      if (old.gpu) { const b = old.gpu; drawing.then(() => gg.releaseFrame(b)); }
     }
   };
 
@@ -200,9 +200,7 @@ export async function createGrainClip(buffer, params, opts = {}) {
       const t = performance.now();
       let e;
       if (gg) {                                   // straight into a GPU buffer: the cache lives on the GPU
-        const { buffer, range } = gg.sourceBuffer(L.size);
-        try { await frame.copyTo(range, { layout: L.planes }); } finally { buffer.unmap(); }
-        e = { n, gpu: buffer, planes: L.planes, bps: L.bps, semi: L.semi };
+        e = { n, gpu: await gg.frameBuffer(frame, L), planes: L.planes, bps: L.bps, semi: L.semi };
       } else {
         let bytes = new ArrayBuffer(L.size);
         await frame.copyTo(bytes, { layout: L.planes });
@@ -211,7 +209,7 @@ export async function createGrainClip(buffer, params, opts = {}) {
       }
       stats.copyMs += performance.now() - t;
       stats.decoded++;
-      if (g !== gen) { if (e.gpu) e.gpu.destroy(); return; }
+      if (g !== gen) { if (e.gpu) gg.releaseFrame(e.gpu); return; }
       put(e);
       const p = pending.get(n);
       if (p) { pending.delete(n); p.res(e); }
@@ -286,8 +284,13 @@ export async function createGrainClip(buffer, params, opts = {}) {
     stats.grainMs += performance.now() - t; stats.grained++;
   }));
 
-  const present = async (e, now) => {
+  let playTok = 0;                              // bumped by pause() and seeks: a frame the play loop was still
+  const present = async (e, now, tok) => {      // drawing then must not stay on screen
     await draw(e);
+    if (tok !== undefined && tok !== playTok) {
+      if (cur >= 0 && cache.has(cur)) await draw(cache.get(cur));
+      return;
+    }
     cur = e.n; stats.shown++;
     const cbs = rvfc.splice(0);
     const md = { mediaTime: e.n / fps, presentedFrames: stats.shown, width: fmt.width, height: fmt.height };
@@ -309,7 +312,7 @@ export async function createGrainClip(buffer, params, opts = {}) {
     if (best > cur) {
       stats.dropped += best - cur - 1;
       busy = true;
-      try { await present(cache.get(best), now); } finally { busy = false; }
+      try { await present(cache.get(best), now, playTok); } finally { busy = false; }
       time = (best + 0.5) / fps;
     }
     if (cur >= N - 1) { playing = false; cancelAnimationFrame(raf); c.dispatchEvent(new Event('ended')); }
@@ -338,6 +341,7 @@ export async function createGrainClip(buffer, params, opts = {}) {
         const n = Math.min(N - 1, Math.max(0, Math.floor(t * fps + 1e-6)));
         time = t;
         const tok = ++seekTok;
+        playTok++;
         seeking = true;
         c.dispatchEvent(new Event('seeking'));
         want(n).then(async e => {
@@ -351,7 +355,7 @@ export async function createGrainClip(buffer, params, opts = {}) {
     },
   });
   c.play = async () => { if (playing || err) return; if (cur >= N - 1) { await present(await want(0)); } playing = true; startClock(); raf = requestAnimationFrame(loop); };
-  c.pause = () => { playing = false; cancelAnimationFrame(raf); time = (cur + 0.5) / fps; };
+  c.pause = () => { playing = false; playTok++; cancelAnimationFrame(raf); time = (cur + 0.5) / fps; };
   c.requestVideoFrameCallback = cb => { rvfc.push(cb); return rvfc.length; };
   c.cancelVideoFrameCallback = () => {};
   c.load = () => {};
@@ -379,7 +383,7 @@ export async function createGrainClip(buffer, params, opts = {}) {
     disposed = true; playing = false; cancelAnimationFrame(raf);
     if (dec && dec.state !== 'closed') dec.close();
     if (wg) wg.dispose();
-    for (const e of cache.values()) if (e.gpu) e.gpu.destroy();
+    for (const e of cache.values()) if (e.gpu) gg.releaseFrame(e.gpu);
     cache.clear(); pending.clear();
   };
   return c;

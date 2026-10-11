@@ -8,8 +8,9 @@ parts:
   1.5.4, the AV1 decoder used by ffmpeg, mpv and most players, with
   full-frame grain synthesis. Its library is a drop-in replacement for
   `libdav1d`.
-- **A browser player** ([wasm/](wasm/README.md)): the fork built for
-  WebAssembly, with a player kit that draws on a `<canvas>`.
+- **A browser player** ([wasm/](wasm/README.md)): the browser decodes a
+  grain-free copy of the clip; the grain is drawn with WebGPU (or the fork's
+  grain code in WebAssembly), bit-identical to the C code.
 - **Later, a GPU path for mpv** (libplacebo): not written yet.
 
 Encoders such as SVT-AV1 and libaom remove film grain before encoding and
@@ -235,19 +236,24 @@ to any writable path before starting mpv):
 - `b` is a blind toggle between standard and full, shown only as A/B;
 - `B` reveals which was which.
 
-### In the browser (WebAssembly)
+### In the browser
 
-`wasm/build.sh` builds the fork for WebAssembly, with SIMD and threads,
-together with a small player kit: a decode Worker and a `<canvas>` that acts
-like a `<video>` and draws with WebGL2.
+The browser's own AV1 decoder (WebCodecs, hardware where the device has it) decodes a **grain-free copy** of the clip.
+The grain is drawn on top from the clip's grain parameters:
+- by WebGPU compute shaders;
+- or, without WebGPU, by this fork's grain code compiled to WebAssembly.
 
-- **Speed:** on a desktop CPU it decodes 1080p 10-bit AV1 with full-frame
-  grain at about 90 fps.
-- **Exactness:** output is bit-identical to native.
-- **Requirements:** the page must be cross-origin isolated (COOP/COEP).
-- **Used by:** [flipcomp](https://github.com/divergentnn/flipcomp) (private),
-  my comparison viewer. It ships the WebAssembly build of commit `b891ed06`:
-  dav1d 1.5.4 with full-frame grain, emscripten 6.0.12.
+Full-frame and standard grain are both **bit-identical** to the C code. This was checked on NVIDIA, AMD and Apple
+GPUs and in SwiftShader, through the browser's decoder end to end.
+
+- **Making the copy:** `build/tools/av1grain strip IN.ivf OUT.ivf PARAMS.json`, or
+  `tools/av1grain_mp4.py IN.mp4 OUT.mp4 PARAMS.json`. It rewrites only the frame headers' grain syntax (to
+  `apply_grain = 0`), using dav1d's own parser, and records the grain of every picture.
+- **Speed:** grain costs 3.2 ms per 4K frame on an RTX 3090 and 7.2 ms on an Apple GPU (Chrome on macOS). Decoding is
+  the browser's: about 120 fps at 4K for Chrome's software dav1d.
+- **Requirements:** a browser that decodes AV1 (Chrome, Edge, Firefox; Safari only on M3 Macs and later). WebGPU, or a
+  cross-origin isolated page for the WebAssembly threads.
+- **Used by:** [flipcomp](https://github.com/divergentnn/flipcomp) (private), my comparison viewer.
 
 See [wasm/README.md](wasm/README.md).
 
@@ -266,8 +272,8 @@ See [wasm/README.md](wasm/README.md).
 ## Caveats
 
 - **Non-conformant on purpose** (see above). Anything that applies AV1 grain
-  outside dav1d still shows standard grain: hardware decoders, mpv's
-  `gpu-next` grain, browsers.
+  outside this fork still shows standard grain: hardware decoders, mpv's
+  `gpu-next` grain, browsers (except with this repository's browser player).
 - **Software decoding of AV1 costs CPU.** Full-frame grain adds about 30-50 %
   to dav1d's decode time.
 - **x86-64 uses AVX2; arm64 uses NEON.** Other CPUs use portable C, which is

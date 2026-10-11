@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Upload bench</title>
+<style>:root { color-scheme: light dark; } body { font: 14px system-ui, sans-serif; margin: 16px; background: Canvas; color: CanvasText; }</style>
+</head>
+<body>
+<h1>Decoded frame → GPU: four ways</h1>
+<pre id="log"></pre>
+<script type="module">
+import { demuxAv1 } from '../web/mp4-demux.mjs';
+import { planarLayout } from '../web/grain-clip.mjs';
+import { gpuDevice } from '../web/gpu-grain.mjs';
+const q = new URLSearchParams(location.search), vec = q.get('vec') || '/vec', clip = q.get('clip') || 'yn4k';
+const log = s => { document.getElementById('log').textContent += s + '\n'; console.log(s); };
+window.results = { done: false, pass: 1 };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  const { device } = await gpuDevice();
+  const vs = await (await fetch(vec + '/vectors.json')).json(), v = vs.find(x => x.name === clip);
+  const d = demuxAv1(await (await fetch(vec + '/' + v.nograinMp4)).arrayBuffer());
+  const pool = [], store = [];
+  async function run(name, handle) {
+    const frames = [];
+    const dec = new VideoDecoder({ output: f => frames.push(f), error: e => log('error ' + e) });
+    dec.configure({ codec: d.codec, codedWidth: d.width, codedHeight: d.height, optimizeForLatency: true });
+    const t0 = performance.now();
+    let n = 0;
+    for (const s of d.samples) {
+      dec.decode(new EncodedVideoChunk({ type: s.sync ? 'key' : 'delta', timestamp: n * 1000, data: d.bytes.subarray(s.offset, s.offset + s.size) }));
+      while (dec.decodeQueueSize > 3) await sleep(0);
+      while (frames.length) { const f = frames.shift(); await handle(f, n++); f.close(); }
+    }
+    await dec.flush();
+    while (frames.length) { const f = frames.shift(); await handle(f, n++); f.close(); }
+    await device.queue.onSubmittedWorkDone();
+    const ms = performance.now() - t0;
+    dec.close();
+    log(`${name}: ${n} frames, ${(n / ms * 1000).toFixed(1)} fps (${(ms / n).toFixed(2)} ms/frame)`);
+    window.results[name] = ms / n;
+  }
+  await run('decode only', async () => {});
+  await run('copyTo ArrayBuffer', async f => { const L = planarLayout(f); await f.copyTo(new ArrayBuffer(L.size), { layout: L.planes }); });
+  let ab = null;
+  await run('copyTo reused ArrayBuffer', async f => { const L = planarLayout(f); ab = ab || new ArrayBuffer(L.size); await f.copyTo(ab, { layout: L.planes }); });
+  const keep = [];
+  await run('mappedAtCreation per frame', async f => {
+    const L = planarLayout(f);
+    const b = device.createBuffer({ size: Math.ceil(L.size / 4) * 4, usage: GPUBufferUsage.STORAGE, mappedAtCreation: true });
+    await f.copyTo(b.getMappedRange(), { layout: L.planes }); b.unmap();
+    keep.push(b); while (keep.length > 8) keep.shift().destroy();
+  });
+  await run('reused ArrayBuffer + writeBuffer', async f => {
+    const L = planarLayout(f); ab = ab || new ArrayBuffer(L.size); await f.copyTo(ab, { layout: L.planes });
+    const b = store[0] || (store[0] = device.createBuffer({ size: Math.ceil(L.size / 4) * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }));
+    device.queue.writeBuffer(b, 0, ab);
+  });
+  // pooled staging buffers (MAP_WRITE) + a GPU copy into a pooled storage buffer
+  const free = [];
+  await run('pooled MAP_WRITE staging + copyBufferToBuffer', async (f, n) => {
+    const L = planarLayout(f), size = Math.ceil(L.size / 4) * 4;
+    let st = free.pop();
+    if (!st) st = device.createBuffer({ size, usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC, mappedAtCreation: true });
+    else await st.mapAsync(GPUMapMode.WRITE);
+    await f.copyTo(st.getMappedRange(), { layout: L.planes }); st.unmap();
+    const dst = store[1 + (n % 8)] || (store[1 + (n % 8)] = device.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }));
+    const enc = device.createCommandEncoder(); enc.copyBufferToBuffer(st, 0, dst, 0, size); device.queue.submit([enc.finish()]);
+    device.queue.onSubmittedWorkDone().then(() => free.push(st));
+  });
+  window.results.done = true;
+})().catch(e => { log('error ' + (e.stack || e)); window.results.error = String(e); window.results.done = true; });
+</script>
+</body>
+</html>
