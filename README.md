@@ -1,7 +1,7 @@
 # av1-fullgrain
 
 Full-frame AV1 film grain: the grain an AV1 file signals, drawn over the
-**whole frame** instead of tiled from one small grain patch. It has three
+**whole frame** instead of tiled from one small grain patch. It has four
 parts:
 
 - **A dav1d fork** (this repository): [dav1d](https://code.videolan.org/videolan/dav1d)
@@ -11,6 +11,11 @@ parts:
 - **A browser player** ([wasm/](wasm/README.md)): the browser decodes a
   grain-free copy of the clip; the grain is drawn with WebGPU (or the fork's
   grain code in WebAssembly), bit-identical to the C code.
+- **A seed fixer** ([av1-grain-seed](#fix-grain-seeds-in-existing-files)):
+  for the standard, tiled grain that every other decoder draws. It replaces
+  unlucky grain seeds in existing files (IVF, OBU, MP4, Matroska) by
+  rewriting 16 bits per frame header. Blotchy repeats disappear in every
+  player, TVs and hardware decoders included. The grain stays tiled.
 - **Later, a GPU path for mpv** (libplacebo): not written yet.
 
 Encoders such as SVT-AV1 and libaom remove film grain before encoding and
