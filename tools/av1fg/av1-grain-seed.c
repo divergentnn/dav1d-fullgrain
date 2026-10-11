@@ -347,6 +347,8 @@ int main(int argc, char **argv)
             so.only_bad = 1;
         } else if (!strcmp(a, "--candidates")) {
             so.candidates = atoi(NEXT());
+        } else if (!strcmp(a, "--refs")) {
+            so.nref = atoi(NEXT());
         } else if (!strcmp(a, "--threads")) {
             so.threads = atoi(NEXT());
         } else if (!strcmp(a, "--scores")) {

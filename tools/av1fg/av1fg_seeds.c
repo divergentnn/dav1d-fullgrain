@@ -394,7 +394,7 @@ int av1fg_choose_seeds(Av1fgScan *s, const Av1fgSeedOpts *o, const uint16_t *lis
     }
     const int nt = o->threads > 0 ? o->threads : (ncpu() < 8 ? ncpu() : 8);
     /* per-frame grain parameters (e.g. SVT-AV1 through ffmpeg): fewer reference seeds per set */
-    w.nref = r->n_sets > o->max_sets ? AV1FG_NREF / 2 : AV1FG_NREF;
+    w.nref = o->nref ? o->nref : r->n_sets > o->max_sets ? AV1FG_NREF / 2 : AV1FG_NREF;
     r->nref = w.nref;
     run_jobs(job_norms, &w, nt);
     /* candidates: frame k takes pool seeds k*K .. k*K+K-1 (mod pool) */

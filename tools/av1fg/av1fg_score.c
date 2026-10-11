@@ -18,7 +18,7 @@ const double av1fg_metric_weights[AV1FG_NM] = {
     0.5, 1.0, 1.0, 1.0, 1.0, 0.25, 0.25, 0.25, 0.25, 0.5,
 };
 
-/* 64 seeds 1024 LFSR steps apart (positions 0, 1024, ..., 64512 on the cycle that starts at state 1) */
+/* 64 seeds spanning the quality range evenly (av1fg_refseeds.inc, built by tests/mkpool.py) */
 const uint16_t av1fg_ref_seeds[AV1FG_NREF] = {
 #include "av1fg_refseeds.inc"
 };
@@ -323,10 +323,13 @@ void av1fg_norm_init(Av1fgScratch *sc, const Av1fgGrainShape *sh, int width, int
     unsigned seeds[AV1FG_NREF];
     if (nref < 8 || nref > AV1FG_NREF)
         nref = AV1FG_NREF;
-    const int step = AV1FG_NREF / nref; /* nref seeds, evenly spread */
+    /* the reference seeds are ordered by quality quantile; a subset of 1/step takes one of
+     * every step seeds, alternating the position within each group so that its quantiles
+     * stay centred */
+    const int step = AV1FG_NREF / nref;
     nref = AV1FG_NREF / step;
     for (int i = 0; i < nref; i++)
-        seeds[i] = av1fg_ref_seeds[i * step];
+        seeds[i] = av1fg_ref_seeds[i * step + (step > 1 ? (i & 1 ? step / 2 : (step - 1) / 2) : 0)];
     av1fg_seed_stats_n(sc, sh, width, height, seeds, nref, all);
     int k = 0;
     for (int i = 0; i < nref; i++)

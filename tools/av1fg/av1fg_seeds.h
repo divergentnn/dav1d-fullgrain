@@ -40,6 +40,7 @@ typedef struct Av1fgSeedOpts {
     int overlap_window;  /* displayed frames checked for template overlap */
     int max_sets;        /* above this many distinct parameter sets, use half the reference seeds */
     int threads;
+    int nref;            /* reference seeds per parameter set (0: automatic) */
 } Av1fgSeedOpts;
 
 typedef struct Av1fgFrameScore {

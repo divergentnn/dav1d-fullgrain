@@ -63,7 +63,7 @@ void av1fg_seed_stats(Av1fgScratch *sc, const Av1fgGrainShape *sh, int width, in
 void av1fg_seed_stats_n(Av1fgScratch *sc, const Av1fgGrainShape *sh, int width, int height, const unsigned *seeds,
                         int n, Av1fgStats *st);
 
-/* fixed reference seeds, spread over the LFSR cycle */
+/* fixed reference seeds: a stratified sample of seed quality */
 extern const uint16_t av1fg_ref_seeds[AV1FG_NREF];
 
 /* nref reference seeds (8..AV1FG_NREF, a divisor of it) */
