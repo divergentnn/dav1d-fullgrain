@@ -182,8 +182,9 @@ struct Dav1dContext {
     Dav1dPicAllocator allocator;
     int apply_grain;
     Dav1dFGVariant fgv; // non-conformant grain synthesis variants (src/fg_variant.h)
-    /* av1-fullgrain: tools/av1grain.c learns from this hook where each frame
-     * header's film_grain_params() start and where the header ends (bit
+    /* av1-fullgrain: its av1grain tool (tools/av1grain/ in
+     * github.com/divergentnn/av1-fullgrain) learns from this hook where each
+     * frame header's film_grain_params() start and where the header ends (bit
      * positions from the first byte of the OBU), to rewrite them. Not set by
      * the library API; NULL for every other caller. */
     struct {

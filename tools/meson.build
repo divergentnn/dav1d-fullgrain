@@ -39,11 +39,6 @@ dav1d_input_objs = static_library('dav1d_input',
     build_by_default : false,
 )
 
-# av1-grain-seed (av1-fullgrain): standalone, built even without the dav1d tools
-if get_option('av1fg')
-    subdir('av1fg')
-endif
-
 # Leave subdir if tools are disabled
 if not get_option('enable_tools')
     subdir_done()
@@ -123,16 +118,4 @@ dav1d = executable('dav1d',
         libm_dependency,
         ],
     install : true,
-)
-
-# av1-fullgrain: grain-free stream + grain parameters (tools/av1grain.c). It
-# includes src/internal.h for the parser hook, so it is built against this
-# library only.
-av1grain = executable('av1grain',
-    files('av1grain.c'),
-
-    link_with : [libdav1d],
-    include_directories : [dav1d_inc_dirs],
-    dependencies : [thread_dependency],
-    install : false,
 )
